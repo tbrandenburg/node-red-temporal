@@ -28,6 +28,11 @@ This is a **divergent fork** of `node-red/node-red`, forked at tag `5.0.7` (`1e8
 > `--repo tbrandenburg/node-red-temporal` and verify `--base` before creating a PR.
 > `gh repo set-default tbrandenburg/node-red-temporal` is configured as a guard — do not change it.
 
+> [!CAUTION]
+> **PRs may only be raised against this fork (`tbrandenburg/node-red-temporal`), never against `upstream`.**
+> Merging is only allowed into this fork's `main`. `upstream` is read-only reference — never propose,
+> push, or merge anything there, regardless of CI status or how low-risk a change appears.
+
 ## The execution seam
 
 Node-RED already exposes the routing seam as a **public hook API**. `Flow.send()` routes through
