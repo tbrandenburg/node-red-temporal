@@ -1,0 +1,6 @@
+[
+    {"id": "tab1", "type": "tab", "label": "Flow 1"},
+    {"id": "n1", "type": "inject", "z": "tab1", "name": "start", "props": [{"p": "payload"}], "repeat": "0.15", "crontab": "", "once": false, "onceDelay": 0.1, "topic": "", "payload": "", "payloadType": "date", "wires": [["n2"]]},
+    {"id": "n2", "type": "change", "z": "tab1", "name": "tag", "rules": [], "wires": [["n3"]]},
+    {"id": "n3", "type": "debug", "z": "tab1", "name": "out", "wires": []}
+]

@@ -1,0 +1,5 @@
+[
+    {"id": "tab1", "type": "tab", "label": "Flow 1"},
+    {"id": "n1", "type": "change", "z": "tab1", "name": "external-in", "rules": [], "wires": [["n2"]]},
+    {"id": "n2", "type": "debug", "z": "tab1", "name": "out", "wires": []}
+]
