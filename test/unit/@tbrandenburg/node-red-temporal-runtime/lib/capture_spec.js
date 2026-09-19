@@ -425,4 +425,34 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
         new Capture().timeoutMs.should.equal(DEFAULT_TIMEOUT_MS);
         new Capture({ timeoutMs: 42 }).timeoutMs.should.equal(42);
     });
+
+    // issue #23: a hop whose DESTINATION node's `.z` equals the id of the
+    // node currently being invoked (`pending.nodeId`) is "internal to the
+    // subflow instance currently in flight" (exactly how Node-RED itself
+    // rewrites a subflow instance's cloned internal nodes' `.z` - see
+    // capture.js's `_onPreRoute` doc). `p2.z` is set to `p1.id` here to
+    // simulate that relationship without needing a full subflow fixture -
+    // real subflow behavior is covered end-to-end by workflows_spec.js's
+    // "issue #23" test against the actual `subflow-flow.json` fixture.
+    it("issue #23: a hop into a node whose z equals the currently-invoked node's id is routed locally, not suppressed/captured - while a hop to a node with a DIFFERENT z is still captured normally", function() {
+        var capture = new Capture();
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["p2"]] },
+            { id: "p2", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var p2 = helper.getNode("p2");
+            p2.z = p1.id; // simulate p2 being an internal node of a subflow instance p1
+            var msg = { mode: "forward", payload: "hi" };
+            return capture.around(p1, msg, function() { p1.receive(msg); });
+        }).then(function(result) {
+            // p1 -> p2 was NOT captured (internal hop, routed locally by
+            // Node-RED) - only p2's own real external send to s1 is.
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("s1");
+            capture.uninstall();
+        });
+    });
 });

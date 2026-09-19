@@ -579,7 +579,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         });
     });
 
-    it("KNOWN LIMITATION: a subflow instance times out - Capture's global preRoute hook suppresses the subflow's OWN internal routing, not just external hops (pre-existing architecture, not a regression introduced by this issue)", function() {
+    it("issue #23: a subflow instance executes through its normal Node-RED runtime representation - the subflow's OWN internal routing (n2 -> its internal doubling function) is no longer suppressed/timed out, and the subflow's real external hop to n3 is still captured", function() {
         return bootstrap(SUBFLOW_FLOW).then(function(h) {
             handle = h;
             capture = new Capture({ timeoutMs: 500 });
@@ -587,7 +587,18 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
             return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 5, _msgid: "subflow-1" } });
         }).then(function(result) {
-            result.error.code.should.equal("NODE_TIMEOUT");
+            // Invoking n2 (the subflow instance) resolves normally instead
+            // of timing out - the internal hop to the subflow's own
+            // doubling function is routed locally by Node-RED, not
+            // suppressed as an Activity-worthy send.
+            should(result.error).be.undefined();
+            // The subflow's genuinely external hop (its output boundary
+            // wired to n3) IS still captured normally - a real external hop
+            // must never be silently dropped just because internal hops
+            // are now let through.
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("n3");
+            result.sends[0].msg.payload.should.equal(10);
         });
     });
 
