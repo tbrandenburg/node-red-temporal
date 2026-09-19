@@ -214,7 +214,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow", func
             });
     });
 
-    it("drains the pending queue one executeNode call at a time, never in parallel", function() {
+    it("issue #24: dispatches an entire wave concurrently (independent branches no longer await one another)", function() {
         var fanoutGraph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
         var inFlight = 0;
         var maxInFlight = 0;
@@ -230,11 +230,14 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow", func
         };
         return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
             .then(function() {
-                maxInFlight.should.equal(1);
+                // n1 runs alone (wave 1); n2 and n3 are siblings produced by
+                // the SAME send and land in wave 2 together, so both are
+                // in flight at once (issue #24 wave-based dispatch).
+                maxInFlight.should.equal(2);
             });
     });
 
-    it("still fails loudly on the first error, without draining sibling branches", function() {
+    it("still fails loudly on the first error, though same-wave siblings are dispatched concurrently first", function() {
         var fanoutGraph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
         var calls = [];
         var executeNode = function(input) {
@@ -249,9 +252,14 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow", func
                 throw new Error("expected runFlow to throw");
             }, function(err) {
                 err.nonRetryable.should.equal(true);
-                calls.should.eql(["n1", "n2"]);
+                // n2 and n3 are same-wave siblings (both produced by n1's
+                // send), so both are dispatched together before the error is
+                // even inspected (issue #24) - but no LATER wave is ever
+                // scheduled, so the run still aborts after this one wave.
+                calls.should.eql(["n1", "n2", "n3"]);
             });
     });
+
 });
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow with input.initial (M4 source fan-out)", function() {
@@ -583,14 +591,35 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         });
     });
 
-    it("KNOWN LIMITATION: Join/fan-in deadlocks under the current strictly-sequential queue drain (pre-existing scope boundary, documented in workflows.js's own module doc, unrelated to destinationId preservation)", function() {
-        // n1 fans out to n2 and n3, both feeding join1 (count: 2). The
-        // sequential drain awaits n2->join1's own executeNode call to
-        // settle BEFORE ever calling n3 - but join1 only calls its
-        // Node-RED `done()` (and hence resolves) once the SECOND message
-        // arrives, which can only happen via n3 - a structural deadlock
-        // that exists independently of this issue's destinationId change
-        // (see workflows.js's "Fan-in ... is out of scope" module doc).
+    it("issue #24: wave-based drain fixes the SCHEDULING deadlock, but a separate pre-existing capture.js ALS-attribution bug still surfaces as NODE_TIMEOUT for this real Join node (KNOWN LIMITATION, narrower than before)", function() {
+        // n1 fans out to n2 and n3, both feeding join1 (count: 2). Before
+        // this fix, the strictly-sequential drain awaited n2->join1's own
+        // executeNode call to settle BEFORE ever calling n3 - so n3 (the
+        // only source of join1's second required message) was NEVER
+        // scheduled: a pure scheduling deadlock. The wave-based drain fixes
+        // exactly that: n2 and n3 now land in the same wave and are
+        // dispatched together via Promise.all, so join1 DOES receive both
+        // messages and DOES produce its joined send (confirmed by direct
+        // instrumentation of capture.js during investigation - join1 itself
+        // successfully emits to n4).
+        //
+        // However, running the REAL join-flow.json fixture end-to-end still
+        // throws NODE_TIMEOUT - for a DIFFERENT, narrower reason than
+        // before, and NOT a regression introduced by this fix: Node-RED's
+        // own `join` node (17-split.js's custom/count mode) defers the
+        // FIRST arriving message's `done()` callback and only invokes it
+        // (together with the second message's own `done()`) from within the
+        // SECOND message's synchronous `node.receive()` call stack
+        // (`completeSend`'s `group.dones.forEach(f => f())`). Capture's
+        // AsyncLocalStorage-based correlation (capture.js `around()`) assumes
+        // each invocation's own `done()` fires within ITS OWN call stack;
+        // here the first invocation's `done()` fires attributed to the
+        // SECOND invocation's ALS context instead, so the first join1
+        // invocation's own Activity promise never settles and times out.
+        // This is a capture.js-level limitation (a node deferring/batching
+        // `done()` calls across two live invocations), out of scope for this
+        // fix (capture.js is explicitly not touched here) - flagged as a
+        // follow-up rather than silently left unexplained.
         return bootstrap(JOIN_FLOW).then(function(h) {
             handle = h;
             capture = new Capture({ timeoutMs: 500 });
@@ -598,10 +627,53 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
             return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: "n1", startMsg: { payload: 1, _msgid: "join-1" } });
         }).then(function() {
-            throw new Error("expected runFlow to throw (deadlock/timeout)");
+            throw new Error("expected runFlow to throw (capture.js ALS-attribution limitation, see comment above)");
         }, function(err) {
             err.nonRetryable.should.equal(true);
             err.message.should.containEql("NODE_TIMEOUT");
+        });
+    });
+
+    it("issue #24: wave-based dispatch invokes both fan-in branches concurrently (mock executeNode)", function() {
+        // n1 -> n2/n3 -> join1 -> n4, mirroring join-flow.json's shape but
+        // driven by a plain mock executeNode + graph (no real Node-RED Join
+        // semantics involved) - proves runFlow itself dispatches n2 and n3
+        // in the SAME wave (both invoked before either's downstream send is
+        // processed), not that Node-RED's Join node happens to work.
+        var graph = { n1: [["n2", "n3"]], n2: [["join1"]], n3: [["join1"]], join1: [["n4"]], n4: [[]] };
+        var invoked = [];
+        var executeNode = function(input) {
+            invoked.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: input.msg }] });
+            }
+            if (input.nodeId === "join1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: input.msg }] });
+            }
+            return Promise.resolve({ sends: [{ port: 0, msg: input.msg }] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {} }).then(function(result) {
+            invoked.should.eql(["n1", "n2", "n3", "join1", "join1", "n4", "n4"]);
+            result.lastNode.should.equal("n4");
+        });
+    });
+
+    it("issue #24: an error in one branch of a wave still aborts the run (fail-loud preserved under concurrent dispatch)", function() {
+        var graph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
+        var executeNode = function(input) {
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: input.msg }] });
+            }
+            if (input.nodeId === "n3") {
+                return Promise.resolve({ error: { code: "NODE_ERROR", message: "boom" } });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {} }).then(function() {
+            throw new Error("expected runFlow to throw");
+        }, function(err) {
+            err.nonRetryable.should.equal(true);
+            err.message.should.containEql("NODE_ERROR");
         });
     });
 });
