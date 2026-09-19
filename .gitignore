@@ -34,3 +34,4 @@ test/unit/@node-red/runtime/lib/nodes/.testUserHome
 
 # node-red-temporal fork additions
 .agents/
+.worktrees/
