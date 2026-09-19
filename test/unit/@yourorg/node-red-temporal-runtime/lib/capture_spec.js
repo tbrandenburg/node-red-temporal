@@ -72,7 +72,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "zero" };
-            return capture.around("p1", msg, function() { p1.receive(msg); });
+            return capture.around(p1, msg, function() { p1.receive(msg); });
         }).then(function(result) {
             result.sends.should.eql([]);
             capture.uninstall();
@@ -88,7 +88,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "multi" };
-            return capture.around("p1", msg, function() { p1.receive(msg); });
+            return capture.around(p1, msg, function() { p1.receive(msg); });
         }).then(function(result) {
             result.sends.length.should.equal(3);
             result.sends.map((s) => s.msg.payload).should.eql([1, 2, 3]);
@@ -107,7 +107,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "ports" };
-            return capture.around("p1", msg, function() { p1.receive(msg); });
+            return capture.around(p1, msg, function() { p1.receive(msg); });
         }).then(function(result) {
             result.sends.length.should.equal(2);
             result.sends[0].port.should.equal(0);
@@ -127,7 +127,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "doneErr" };
-            return capture.around("p1", msg, function() { p1.receive(msg); })
+            return capture.around(p1, msg, function() { p1.receive(msg); })
                 .then(function() { throw new Error("expected rejection"); }, function(rejection) {
                     rejection.nodeId.should.equal("p1");
                     rejection.error.message.should.equal("boom");
@@ -146,7 +146,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "throw" };
-            return capture.around("p1", msg, function() { p1.receive(msg); })
+            return capture.around(p1, msg, function() { p1.receive(msg); })
                 .then(function() { throw new Error("expected rejection"); }, function(rejection) {
                     rejection.nodeId.should.equal("p1");
                     rejection.error.message.should.equal("sync-throw");
@@ -163,7 +163,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "hang" };
-            return capture.around("p1", msg, function() { p1.receive(msg); })
+            return capture.around(p1, msg, function() { p1.receive(msg); })
                 .then(function() { throw new Error("expected timeout rejection"); }, function(rejection) {
                     rejection.timeout.should.be.true();
                     rejection.nodeId.should.equal("p1");
@@ -188,8 +188,8 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
             var sharedMsgid = "shared-msgid-1";
             var p1Msg = { mode: "forward", _msgid: sharedMsgid };
             var p2Msg = { mode: "zero", _msgid: sharedMsgid };
-            var p1Result = capture.around("p1", p1Msg, function() { p1.receive(p1Msg); });
-            var p2Result = capture.around("p2", p2Msg, function() { p2.receive(p2Msg); });
+            var p1Result = capture.around(p1, p1Msg, function() { p1.receive(p1Msg); });
+            var p2Result = capture.around(p2, p2Msg, function() { p2.receive(p2Msg); });
             return Promise.all([p1Result, p2Result]);
         }).then(function(results) {
             results[0].sends.length.should.equal(1);
@@ -210,7 +210,7 @@ describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
         ]).then(function() {
             var p1 = helper.getNode("p1");
             var msg = { mode: "multi" };
-            return capture.around("p1", msg, function() { p1.receive(msg); });
+            return capture.around(p1, msg, function() { p1.receive(msg); });
         }).then(function() {
             postDeliverCalls.should.equal(0);
             capture.uninstall();
