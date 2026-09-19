@@ -111,3 +111,7 @@ npm start             # stock Node-RED
 
 Milestone plan and acceptance criteria: issue
 [#1 — MVP: Temporal-backed Node-RED flow execution (WSJF #1)](https://github.com/tbrandenburg/node-red-temporal/issues/1).
+
+## Lessons Learned
+
+- 2026-09-19: Pitfall: M2's capture layer patched the shared `Node.prototype.error` for the whole install()/uninstall() lifetime; a full-suite run (all specs in one mocha process) showed this leaking across unrelated node test files, causing ~80 cascading unrelated timeouts. Prevention: never patch a shared prototype/class-wide method as a global toggle — scope any such patch to a single instance and a single invocation, always restored on every exit path (resolve/reject/timeout), and verify with a full-suite run (not just the new spec file in isolation) before accepting a milestone that touches Node-RED's shared runtime classes.
