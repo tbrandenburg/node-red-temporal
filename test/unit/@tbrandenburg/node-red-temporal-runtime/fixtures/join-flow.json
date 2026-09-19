@@ -1,0 +1,108 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "n2",
+                "n3"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "change",
+        "z": "tab1",
+        "name": "tag-a",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "\"a\"",
+                "tot": "jsonata"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "wires": [
+            [
+                "join1"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "change",
+        "z": "tab1",
+        "name": "tag-b",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "\"b\"",
+                "tot": "jsonata"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "wires": [
+            [
+                "join1"
+            ]
+        ],
+        "x": 260,
+        "y": 100
+    },
+    {
+        "id": "join1",
+        "type": "join",
+        "z": "tab1",
+        "name": "",
+        "mode": "custom",
+        "build": "array",
+        "property": "payload",
+        "propertyType": "msg",
+        "key": "topic",
+        "joiner": "\\n",
+        "joinerType": "str",
+        "accumulate": false,
+        "timeout": "",
+        "count": "2",
+        "reduceRight": false,
+        "wires": [
+            [
+                "n4"
+            ]
+        ],
+        "x": 340,
+        "y": 100
+    },
+    {
+        "id": "n4",
+        "type": "debug",
+        "z": "tab1",
+        "name": "joined",
+        "wires": [],
+        "x": 420,
+        "y": 100
+    }
+]

@@ -1,0 +1,46 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "loop1"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "loop1",
+        "type": "function",
+        "z": "tab1",
+        "name": "count-down",
+        "func": "msg.count = (msg.count === undefined ? 3 : msg.count) - 1;\nif (msg.count > 0) { return [msg, null]; }\nreturn [null, { payload: 'done', count: msg.count }];",
+        "wires": [
+            [
+                "loop1"
+            ],
+            [
+                "n2"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    }
+]

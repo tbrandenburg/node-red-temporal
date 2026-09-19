@@ -1,0 +1,58 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "n2"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "function",
+        "z": "tab1",
+        "name": "identity",
+        "func": "return msg;",
+        "wires": [
+            []
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "complete1",
+        "type": "complete",
+        "z": "tab1",
+        "name": "",
+        "scope": [
+            "n2"
+        ],
+        "uncaught": false,
+        "wires": [
+            [
+                "n3"
+            ]
+        ],
+        "x": 260,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "debug",
+        "z": "tab1",
+        "name": "completed",
+        "wires": [],
+        "x": 340,
+        "y": 100
+    }
+]
