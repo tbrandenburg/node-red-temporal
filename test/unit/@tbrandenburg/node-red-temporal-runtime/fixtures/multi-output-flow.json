@@ -1,0 +1,55 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "n2"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "function",
+        "z": "tab1",
+        "name": "two-ports",
+        "func": "return [msg, msg];",
+        "wires": [
+            [
+                "n3"
+            ],
+            [
+                "n4"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out-port0",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    },
+    {
+        "id": "n4",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out-port1",
+        "wires": [],
+        "x": 340,
+        "y": 100
+    }
+]

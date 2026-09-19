@@ -10,6 +10,14 @@ var redUtil = require("../../../../../packages/node_modules/@node-red/util");
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FLOW = path.join(FIXTURES, "four-node-flow.json");
 var FANOUT_FLOW = path.join(FIXTURES, "fanout-flow.json");
+var MULTI_SEND_FLOW = path.join(FIXTURES, "multi-send-flow.json");
+var MULTI_OUTPUT_FLOW = path.join(FIXTURES, "multi-output-flow.json");
+var LINK_FLOW = path.join(FIXTURES, "link-flow.json");
+var SUBFLOW_FLOW = path.join(FIXTURES, "subflow-flow.json");
+var CATCH_FLOW = path.join(FIXTURES, "catch-flow.json");
+var COMPLETE_FLOW = path.join(FIXTURES, "complete-flow.json");
+var JOIN_FLOW = path.join(FIXTURES, "join-flow.json");
+var LOOP_FLOW = path.join(FIXTURES, "loop-flow.json");
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - resolveDestinations", function() {
     var graph = {
@@ -35,6 +43,81 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - resolveDestina
 
     it("returns an empty array when the node id is not in the graph", function() {
         resolveDestinations(graph, "unknown", { port: 0, msg: {} }).should.eql([]);
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow enqueues resolved destinationId directly (issue #13)", function() {
+    it("enqueues each send's own destinationId without consulting graph at all", function() {
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "n2", msg: {} }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        // graph is intentionally EMPTY/wrong (would resolve to nothing, or
+        // something different) to prove destinationId is used directly and
+        // graph is never consulted when destinationId is present.
+        return runFlow({ executeNode: executeNode, graph: { n1: [["some-other-node"]] }, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                calls.should.eql(["n1", "n2"]);
+            });
+    });
+
+    it("does NOT dedupe two distinct sends on the SAME port - both destinationIds are enqueued", function() {
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                // two node.send() calls on the same port, each captured as
+                // its own {port, destinationId, msg} entry by Capture -
+                // must remain two distinct downstream deliveries.
+                return Promise.resolve({ sends: [
+                    { port: 0, destinationId: "n2", msg: { seq: 1 } },
+                    { port: 0, destinationId: "n2", msg: { seq: 2 } }
+                ] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: {}, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                calls.should.eql(["n1", "n2", "n2"]);
+            });
+    });
+
+    it("enqueues fan-out (multiple wires on one output) from destinationId entries alone", function() {
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [
+                    { port: 0, destinationId: "n2", msg: {} },
+                    { port: 0, destinationId: "n3", msg: {} }
+                ] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: {}, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                calls.sort().should.eql(["n1", "n2", "n3"]);
+            });
+    });
+
+    it("falls back to resolveDestinations/graph for sends without a destinationId (backward compatibility)", function() {
+        var calls = [];
+        var fallbackGraph = { n1: [["n2"]] };
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: {} }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: fallbackGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                calls.should.eql(["n1", "n2"]);
+            });
     });
 });
 
@@ -382,6 +465,143 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow fan-ou
                 .then(function() {
                     invoked.sort().should.eql(["n1", "n2", "n3", "n4", "n5"]);
                 });
+        });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED compatibility cases (issue #13)", function() {
+    this.timeout(20000);
+
+    var handle;
+    var capture;
+
+    afterEach(function() {
+        if (capture) {
+            capture.uninstall();
+            capture = null;
+        }
+        if (handle) {
+            var h = handle;
+            handle = null;
+            return h.stop();
+        }
+    });
+
+    function runWithRealFlow(flowFile, startNode, startMsg) {
+        return bootstrap(flowFile).then(function(h) {
+            handle = h;
+            capture = new Capture();
+            capture.install(redUtil);
+            var invoked = [];
+            var realExecuteNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            var executeNode = function(input) {
+                invoked.push(input.nodeId);
+                return realExecuteNode(input);
+            };
+            // graph deliberately NOT extracted from flowFile (or extracted but
+            // irrelevant for link-flow) - proves the run is driven entirely by
+            // Node-RED's own resolved destinationId, not by a wire-graph lookup.
+            return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: startNode, startMsg: startMsg })
+                .then(function(result) {
+                    return { invoked: invoked, result: result };
+                });
+        });
+    }
+
+    it("two distinct node.send() calls on the same port produce two distinct downstream deliveries (not deduped)", function() {
+        return runWithRealFlow(MULTI_SEND_FLOW, "n2", { payload: 1, _msgid: "multisend-1" }).then(function(r) {
+            // n2 calls node.send(msg) twice, wired to [n3, n4] - Node-RED's
+            // own preRoute fires once per (send-call x destination) = 4
+            // times, so both n3 and n4 must each be invoked TWICE.
+            r.invoked.filter(function(id) { return id === "n3"; }).length.should.equal(2);
+            r.invoked.filter(function(id) { return id === "n4"; }).length.should.equal(2);
+        });
+    });
+
+    it("multi-output routing matches Node-RED: each output port's own send reaches only its own wired destination", function() {
+        return runWithRealFlow(MULTI_OUTPUT_FLOW, "n2", { payload: 1, _msgid: "multiout-1" }).then(function(r) {
+            r.invoked.sort().should.eql(["n2", "n3", "n4"]);
+        });
+    });
+
+    it("Link Out -> Link In works with NO bespoke Link routing (Link Out's own wires are empty; destinationId alone drives it)", function() {
+        return runWithRealFlow(LINK_FLOW, "n1", { payload: 1, _msgid: "link-1" }).then(function(r) {
+            r.invoked.should.eql(["n1", "link-out-1", "link-in-1", "n2"]);
+        });
+    });
+
+    it("a Catch node's own real Node-RED routing is now captured as a resolved send (capture-layer proof)", function() {
+        // Known limitation (see AGENTS.md-style honest reporting): runFlow's
+        // existing fail-fast contract still throws a nonRetryable
+        // ApplicationFailure on any NODE_ERROR, so the Catch node's captured
+        // downstream branch (`n3`) is NOT currently enqueued by the Workflow
+        // even though Capture/Activities now correctly preserve it in the
+        // error's `sends` payload. Deciding whether a caught error should
+        // let the Workflow continue draining is a separate design decision,
+        // out of scope for this "smallest bridge" change - flagged as a
+        // follow-up, not silently papered over.
+        return bootstrap(CATCH_FLOW).then(function(h) {
+            handle = h;
+            capture = new Capture();
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "catch-1" } });
+        }).then(function(result) {
+            result.error.code.should.equal("NODE_ERROR");
+            // The Catch node (scope: ["n2"]) received the error synchronously
+            // via Node-RED's own Flow.handleError and sent its own message to
+            // n3 - captured here with n3's own resolved destinationId.
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("n3");
+        });
+    });
+
+    it("a Complete node's own real Node-RED routing is captured and reached by the Workflow (no error path involved)", function() {
+        return runWithRealFlow(COMPLETE_FLOW, "n1", { payload: 1, _msgid: "complete-1" }).then(function(r) {
+            // n2 (identity function, no wires of its own) completes -
+            // Node-RED's Flow.handleComplete dispatches to the scoped
+            // Complete node, which sends onward to n3.
+            r.invoked.should.eql(["n1", "n2", "n3"]);
+        });
+    });
+
+    it("a finite loop (self-wired node decrementing a counter) executes and terminates normally", function() {
+        return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }).then(function(r) {
+            r.invoked.should.eql(["loop1", "loop1", "loop1", "n2"]);
+        });
+    });
+
+    it("KNOWN LIMITATION: a subflow instance times out - Capture's global preRoute hook suppresses the subflow's OWN internal routing, not just external hops (pre-existing architecture, not a regression introduced by this issue)", function() {
+        return bootstrap(SUBFLOW_FLOW).then(function(h) {
+            handle = h;
+            capture = new Capture({ timeoutMs: 500 });
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 5, _msgid: "subflow-1" } });
+        }).then(function(result) {
+            result.error.code.should.equal("NODE_TIMEOUT");
+        });
+    });
+
+    it("KNOWN LIMITATION: Join/fan-in deadlocks under the current strictly-sequential queue drain (pre-existing scope boundary, documented in workflows.js's own module doc, unrelated to destinationId preservation)", function() {
+        // n1 fans out to n2 and n3, both feeding join1 (count: 2). The
+        // sequential drain awaits n2->join1's own executeNode call to
+        // settle BEFORE ever calling n3 - but join1 only calls its
+        // Node-RED `done()` (and hence resolves) once the SECOND message
+        // arrives, which can only happen via n3 - a structural deadlock
+        // that exists independently of this issue's destinationId change
+        // (see workflows.js's "Fan-in ... is out of scope" module doc).
+        return bootstrap(JOIN_FLOW).then(function(h) {
+            handle = h;
+            capture = new Capture({ timeoutMs: 500 });
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: "n1", startMsg: { payload: 1, _msgid: "join-1" } });
+        }).then(function() {
+            throw new Error("expected runFlow to throw (deadlock/timeout)");
+        }, function(err) {
+            err.nonRetryable.should.equal(true);
+            err.message.should.containEql("NODE_TIMEOUT");
         });
     });
 });

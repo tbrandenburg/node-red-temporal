@@ -37,7 +37,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
         });
     }
 
-    it("delivers a message to a real live node and returns its actual sends as {port, msg}", function() {
+    it("delivers a message to a real live node and returns its actual sends as {port, destinationId, msg}", function() {
         return bootWith(FLOW).then(function(ctx) {
             return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m1" } });
         }).then(function(result) {
@@ -45,7 +45,10 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
             result.sends.length.should.equal(1);
             result.sends[0].port.should.equal(0);
             result.sends[0].msg.payload.should.equal(42);
-            should.not.exist(result.sends[0].destinationId);
+            // issue #13: destinationId is Node-RED's own resolved routing
+            // decision (from Capture's preRoute hook), preserved through the
+            // Activity boundary instead of being dropped.
+            result.sends[0].destinationId.should.equal("n3");
         });
     });
 

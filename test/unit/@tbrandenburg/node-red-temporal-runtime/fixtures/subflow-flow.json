@@ -1,0 +1,79 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "n2"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "subflow:sf1",
+        "z": "tab1",
+        "name": "double-sf",
+        "wires": [
+            [
+                "n3"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    },
+    {
+        "id": "sf1",
+        "type": "subflow",
+        "name": "Double",
+        "info": "",
+        "in": [
+            {
+                "wires": [
+                    {
+                        "id": "sf-fn"
+                    }
+                ]
+            }
+        ],
+        "out": [
+            {
+                "wires": [
+                    {
+                        "id": "sf-fn",
+                        "port": 0
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "sf-fn",
+        "type": "function",
+        "z": "sf1",
+        "name": "double",
+        "func": "msg.payload = msg.payload * 2; return msg;",
+        "wires": [
+            []
+        ],
+        "x": 340,
+        "y": 100
+    }
+]
