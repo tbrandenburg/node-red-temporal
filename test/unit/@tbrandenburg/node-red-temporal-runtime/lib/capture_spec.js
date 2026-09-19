@@ -238,6 +238,123 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
         });
     });
 
+    it("M2-1: autonomous single-destination send invokes onIngress exactly once, local delivery suppressed", function() {
+        var ingressCalls = [];
+        var postDeliverCalls = 0;
+        var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
+        RED.hooks.add("postDeliver.temporal-m2-1", function() { postDeliverCalls++; });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "forward", payload: "single-dest" };
+            p1.receive(msg);
+            return new Promise((resolve) => setImmediate(resolve));
+        }).then(function() {
+            ingressCalls.length.should.equal(1);
+            ingressCalls[0].sourceNodeId.should.equal("p1");
+            ingressCalls[0].sends.length.should.equal(1);
+            ingressCalls[0].sends[0].destinationId.should.equal("s1");
+            postDeliverCalls.should.equal(0);
+            capture.uninstall();
+            RED.hooks.remove("postDeliver.temporal-m2-1");
+        });
+    });
+
+    it("M2-2: autonomous single-destination send (multi mode fires 3 preRoute events for one node.send loop) groups per emission", function() {
+        var ingressCalls = [];
+        var postDeliverCalls = 0;
+        var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
+        RED.hooks.add("postDeliver.temporal-m2-2", function() { postDeliverCalls++; });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "multi" };
+            p1.receive(msg);
+            return new Promise((resolve) => setImmediate(resolve));
+        }).then(function() {
+            ingressCalls.length.should.equal(1);
+            ingressCalls[0].sourceNodeId.should.equal("p1");
+            ingressCalls[0].sends.length.should.equal(3);
+            ingressCalls[0].sends.map((s) => s.msg.payload).should.eql([1, 2, 3]);
+            postDeliverCalls.should.equal(0);
+            capture.uninstall();
+            RED.hooks.remove("postDeliver.temporal-m2-2");
+        });
+    });
+
+    it("M2-3: autonomous fan-out send across two wires from one output port groups into ONE onIngress event", function() {
+        var ingressCalls = [];
+        var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1", "s2"]] },
+            { id: "s1", type: "helper" },
+            { id: "s2", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "forward", payload: "fanout-2" };
+            p1.receive(msg);
+            return new Promise((resolve) => setImmediate(resolve));
+        }).then(function() {
+            var fanoutEvents = ingressCalls.filter((e) => e.sends.some((s) => s.msg.payload === "fanout-2"));
+            fanoutEvents.length.should.equal(1);
+            fanoutEvents[0].sends.length.should.equal(2);
+            var destinationIds = fanoutEvents[0].sends.map((s) => s.destinationId).sort();
+            destinationIds.should.eql(["s1", "s2"]);
+            capture.uninstall();
+        });
+    });
+
+    it("M2-4: two rapid but distinct autonomous emissions from the same source node do not cross-contaminate", function() {
+        var ingressCalls = [];
+        var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            p1.receive({ mode: "forward", _msgid: "m2-4-a", payload: "A" });
+            p1.receive({ mode: "forward", _msgid: "m2-4-b", payload: "B" });
+            return new Promise((resolve) => setImmediate(resolve));
+        }).then(function() {
+            ingressCalls.length.should.equal(2);
+            var byMsgid = {};
+            ingressCalls.forEach((e) => { byMsgid[e.msg._msgid] = e; });
+            byMsgid["m2-4-a"].sends.length.should.equal(1);
+            byMsgid["m2-4-a"].sends[0].msg.payload.should.equal("A");
+            byMsgid["m2-4-b"].sends.length.should.equal(1);
+            byMsgid["m2-4-b"].sends[0].msg.payload.should.equal("B");
+            capture.uninstall();
+        });
+    });
+
+    it("M2-5: Activity-owned around() path is unchanged and never invokes onIngress", function() {
+        var ingressCalls = [];
+        var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "multi" };
+            return capture.around(p1, msg, function() { p1.receive(msg); });
+        }).then(function(result) {
+            result.sends.length.should.equal(3);
+            return new Promise((resolve) => setImmediate(resolve));
+        }).then(function() {
+            ingressCalls.length.should.equal(0);
+            capture.uninstall();
+        });
+    });
+
     it("exports an overridable DEFAULT_TIMEOUT_MS", function() {
         DEFAULT_TIMEOUT_MS.should.be.a.Number();
         new Capture().timeoutMs.should.equal(DEFAULT_TIMEOUT_MS);
