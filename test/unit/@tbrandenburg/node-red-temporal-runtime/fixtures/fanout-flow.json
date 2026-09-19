@@ -1,0 +1,8 @@
+[
+    {"id": "tab1", "type": "tab", "label": "Flow 1"},
+    {"id": "n1", "type": "inject", "z": "tab1", "name": "start", "wires": [["n2", "n3"]]},
+    {"id": "n2", "type": "change", "z": "tab1", "name": "tag-a", "rules": [], "wires": [["n4"]]},
+    {"id": "n3", "type": "change", "z": "tab1", "name": "tag-b", "rules": [], "wires": [["n5"]]},
+    {"id": "n4", "type": "debug", "z": "tab1", "name": "out-a", "wires": []},
+    {"id": "n5", "type": "debug", "z": "tab1", "name": "out-b", "wires": []}
+]
