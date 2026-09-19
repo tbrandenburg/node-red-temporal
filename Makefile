@@ -6,7 +6,7 @@
 # so it doesn't need 3 manually-managed terminals.
 
 RUNTIME_DIR := packages/node_modules/@tbrandenburg/node-red-temporal-runtime
-CLI         := $(RUNTIME_DIR)/bin/temporal-node-red
+CLI         := $(RUNTIME_DIR)/bin/node-red-temporal
 DEMO_FLOW   := $(RUNTIME_DIR)/demo/flows.json
 
 PID_DIR        := /tmp/node-red-temporal-demo
