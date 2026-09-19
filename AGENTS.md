@@ -107,6 +107,20 @@ npm run mocha:core    # runtime/unit tests only, faster
 npm start             # stock Node-RED
 ```
 
+### Temporal demo (`make`)
+
+Convenience targets wrapping the Temporal-backed demo's dev-server + worker
+lifecycle (`packages/node_modules/@tbrandenburg/node-red-temporal-runtime`),
+so it doesn't need 3 manually-managed terminals. PID/log files live under
+`/tmp/node-red-temporal-demo/`, not in the repo.
+
+| Target | Description |
+|---|---|
+| `make demo-run` | Start (or reuse) a Temporal dev server, then start the demo worker — both detached. Prints the Web UI URL and worker log path. |
+| `make demo-start` | Trigger a new workflow execution against the running demo (`Inject → HTTP Request → Change → Debug`). |
+| `make demo-status` | Check whether the Temporal server and the demo worker are up. |
+| `make demo-stop` | Stop the demo worker; stops the Temporal dev server too, but only if `demo-run` started it (a reused, externally-started server is left running). |
+
 ## Current work
 
 Milestone plan and acceptance criteria: issue
