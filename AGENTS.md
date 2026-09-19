@@ -33,6 +33,84 @@ This is a **divergent fork** of `node-red/node-red`, forked at tag `5.0.7` (`1e8
 > Merging is only allowed into this fork's `main`. `upstream` is read-only reference — never propose,
 > push, or merge anything there, regardless of CI status or how low-risk a change appears.
 
+## Folder structure and do-not-touch zones
+
+To maximize mergability with upstream, **all new work lives under `packages/node_modules/@tbrandenburg/`
+and its matching test tree**. Everything else under `packages/` and root-level Node-RED scaffolding is
+upstream-owned and must stay byte-for-byte identical to `upstream/main`.
+
+| Folder / file | Contents | Touch? |
+|---|---|---|
+| `packages/node_modules/@node-red/` | runtime, registry, util, editor-api, editor-client, nodes | ❌ DO NOT TOUCH |
+| `packages/node_modules/node-red/` | CLI/settings entrypoint (`bin/`, `lib/`, `red.js`) | ❌ DO NOT TOUCH |
+| `packages/node_modules/@tbrandenburg/node-red-temporal-runtime/` | all new runtime code (`bin/`, `lib/`, `demo/`, `package.json`) | ✅ ALL new code goes here |
+| `test/unit/@node-red/` | upstream unit tests | ❌ DO NOT TOUCH |
+| `test/unit/node-red/` | upstream unit tests | ❌ DO NOT TOUCH |
+| `test/unit/@tbrandenburg/node-red-temporal-runtime/` | our specs + fixtures | ✅ our tests go here |
+| `test/nodes/`, `test/editor/`, `test/resources/` | upstream E2E/editor/node test suites | ❌ DO NOT TOUCH |
+| `scripts/` | upstream release/build tooling | ❌ DO NOT TOUCH |
+| `eslint.config.js`, `.mocharc.json`, `.nycrc.json`, `nodemon.json`, `jsdoc.json` | upstream lint/test/build config | ❌ DO NOT TOUCH |
+| `package.json`, `package-lock.json` | dependency manifests | ⚠️ ADD-ONLY — append new `@tbrandenburg/*` deps only, never remove/reorder/version-bump existing upstream deps |
+| `README.md`, `CHANGELOG.md`, `API.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`, `CITATION.cff` | upstream project docs/metadata | ❌ DO NOT TOUCH |
+| `Makefile` | demo lifecycle targets | ⚠️ ADD-ONLY — `demo-run`/`demo-start`/`demo-status`/`demo-stop` targets only |
+| `AGENTS.md`, `UPSTREAM.md` | our own docs, don't exist upstream | ✅ update freely |
+| `.agents/`, `.playwright-mcp/`, `.worktrees/` (gitignored) | local tooling/scratch | ✅ ours, never upstream-relevant |
+
+**Rule of thumb:** if a path doesn't start with `@tbrandenburg/`, isn't `AGENTS.md`/`UPSTREAM.md`, and
+isn't a Makefile-only addition, don't edit it. Before every commit:
+
+```bash
+git diff --stat upstream/main -- packages/node_modules/@node-red/ packages/node_modules/node-red/ \
+  test/unit/@node-red/ test/unit/node-red/ test/nodes/ test/editor/ test/resources/ scripts/   # must be empty
+```
+
+## Keeping `UPSTREAM.md` current
+
+`UPSTREAM.md` is the fork's audit trail. Update it (append to its "Sync history" section) on
+every one of these events — never silently:
+
+| Event | Update `UPSTREAM.md` with |
+|---|---|
+| Merging `upstream/main` into `main` | New upstream tag/commit synced to, date, and a re-confirmation the zero-diff check still passes |
+| Bumping the pinned `@node-red/*` dependency versions | Old → new version, and which upstream tag they now match |
+| Any file ever copied/vendored/adapted from upstream (should be rare/never) | The source file, its upstream path, and the tag it was taken from |
+| Security patch merged out-of-cycle from upstream | Same as a regular merge, flagged as security-driven |
+
+Routine for every upstream sync:
+
+```bash
+git fetch upstream --tags
+git merge upstream/main
+git diff --stat upstream/main -- packages/node_modules/@node-red/   # must be empty
+npm test                                                            # must stay green
+```
+
+Then append one line to `UPSTREAM.md`'s "Sync history" table: date, upstream tag/commit merged to,
+zero-diff result, test result. Do this even when the merge was trivial — the log's value is in being
+complete, not just covering the hard cases. `UPSTREAM.md` is a **human-readable log only** — nothing
+reads it programmatically; it is never parsed by CI or tooling.
+
+### CI enforcement: `upstream-sync-status.yml`
+
+Every PR is blocked (not just warned) if the latest `node-red/node-red` release tag is not yet an
+ancestor of the PR's branch (`.github/workflows/upstream-sync-status.yml`, additive — does not
+modify the do-not-touch `tests.yml`/`release.yml`). The source of truth is **git ancestry itself**
+(`git merge-base --is-ancestor <latest-upstream-tag> HEAD`) — deterministic, requires no file to stay
+in sync with reality, and cannot drift from `UPSTREAM.md` because it never reads it.
+
+**Corrective action when blocked:** merge upstream into your own PR branch, then push again — the
+check re-runs automatically:
+
+```bash
+git fetch upstream --tags
+git merge upstream/<latest-tag>
+git diff --stat upstream/main -- packages/node_modules/@node-red/   # must be empty
+npm test                                                            # must stay green
+```
+
+Then append the new sync to `UPSTREAM.md`'s Sync history table as part of the same PR before
+pushing — this both satisfies the check and keeps the audit trail complete in one step.
+
 ## The execution seam
 
 Node-RED already exposes the routing seam as a **public hook API**. `Flow.send()` routes through
