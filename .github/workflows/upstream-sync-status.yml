@@ -1,0 +1,49 @@
+name: Upstream sync status
+
+# Additive, do-not-touch-safe: mirrors tests.yml's PR trigger so this check
+# rides along on every PR without ever modifying the upstream-owned
+# tests.yml/release.yml files (see AGENTS.md's folder-structure table).
+#
+# Source of truth is git ancestry itself, not UPSTREAM.md (which is a
+# human-readable log only, never parsed here). A PR is in sync iff the
+# latest node-red/node-red release tag is an ancestor of its branch.
+#
+# Blocking by design, check-only (never auto-merges/pushes a commit back):
+# fail the check if behind. Corrective action is always the same - merge
+# upstream into this branch and push again (see AGENTS.md > "Keeping
+# UPSTREAM.md current").
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream tags
+        run: |
+          git remote add upstream https://github.com/node-red/node-red.git
+          git fetch upstream --tags --quiet
+
+      - name: Verify latest upstream tag is an ancestor of this branch
+        run: |
+          latest=$(git tag -l --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          echo "### Upstream sync status" >> "$GITHUB_STEP_SUMMARY"
+          echo "Latest upstream release tag: \`$latest\`" >> "$GITHUB_STEP_SUMMARY"
+
+          if git merge-base --is-ancestor "$latest" HEAD; then
+            echo "In sync — \`$latest\` is an ancestor of this branch. No action required." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "::error title=Upstream sync required::This branch does not contain node-red/node-red@${latest}. Corrective action: git fetch upstream --tags && git merge upstream/${latest}, verify the zero-diff check and npm test, then push. See AGENTS.md > 'Keeping UPSTREAM.md current'."
+          echo "**BLOCKED — corrective action required**: merge \`upstream/${latest}\` into this branch." >> "$GITHUB_STEP_SUMMARY"
+          exit 1

@@ -44,3 +44,13 @@ Temporal runtime work tracked in issue #1.
 - Pull requests for this fork's own work are only ever raised against
   `tbrandenburg/node-red-temporal`'s `main` branch, using
   `gh pr create --repo tbrandenburg/node-red-temporal`.
+
+## Sync history
+
+Append one row per upstream merge, `@node-red/*` version bump, out-of-cycle
+security patch, or (should it ever happen) copied/adapted upstream file. See
+`AGENTS.md`'s "Keeping UPSTREAM.md current" for the routine.
+
+| Date | Event | Upstream tag/commit | Zero-diff check | `npm test` |
+|---|---|---|---|---|
+| 2026-09-18 | Fork point | `5.0.7` (`1e85f1efb`) | empty | baseline: 2864 passing / 60 pending / 0 failing |
