@@ -1,6 +1,6 @@
 var should = require("should");
 var path = require("path");
-var { resolveNext, runFlow } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/workflows.js");
+var { resolveDestinations, runFlow, createExecuteNode: makeExecuteNodeProxy, buildActivitySummary } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/workflows.js");
 var { extractWireGraph } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/wireGraph.js");
 var { bootstrap } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
 var { Capture } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/capture.js");
@@ -9,31 +9,32 @@ var redUtil = require("../../../../../packages/node_modules/@node-red/util");
 
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FLOW = path.join(FIXTURES, "four-node-flow.json");
+var FANOUT_FLOW = path.join(FIXTURES, "fanout-flow.json");
 
-describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - resolveNext", function() {
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - resolveDestinations", function() {
     var graph = {
         n1: [["n2"], ["n3", "n4"]],
         n2: [[]]
     };
 
-    it("returns the first destination wired to the send's port", function() {
-        resolveNext(graph, "n1", { port: 0, msg: {} }).should.equal("n2");
+    it("returns all destinations wired to the send's port", function() {
+        resolveDestinations(graph, "n1", { port: 0, msg: {} }).should.eql(["n2"]);
     });
 
-    it("ignores fan-out: only the first destination on a multi-destination port", function() {
-        resolveNext(graph, "n1", { port: 1, msg: {} }).should.equal("n3");
+    it("follows fan-out: every destination on a multi-destination port", function() {
+        resolveDestinations(graph, "n1", { port: 1, msg: {} }).should.eql(["n3", "n4"]);
     });
 
-    it("returns undefined when the port has no wiring", function() {
-        should.not.exist(resolveNext(graph, "n2", { port: 0, msg: {} }));
+    it("returns an empty array when the port has no wiring", function() {
+        resolveDestinations(graph, "n2", { port: 0, msg: {} }).should.eql([]);
     });
 
-    it("returns undefined when there is no send at all (end of path)", function() {
-        should.not.exist(resolveNext(graph, "n1", undefined));
+    it("returns an empty array when there is no send at all (end of path)", function() {
+        resolveDestinations(graph, "n1", undefined).should.eql([]);
     });
 
-    it("returns undefined when the node id is not in the graph", function() {
-        should.not.exist(resolveNext(graph, "unknown", { port: 0, msg: {} }));
+    it("returns an empty array when the node id is not in the graph", function() {
+        resolveDestinations(graph, "unknown", { port: 0, msg: {} }).should.eql([]);
     });
 });
 
@@ -100,6 +101,140 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow", func
                 should.not.exist(result.lastNode);
             });
     });
+
+    it("fans out to every destination wired on a port (branch: A -> B and A -> C)", function() {
+        var fanoutGraph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            return Promise.resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: { payload: 1 } }] : [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                calls.should.eql(["n1", "n2", "n3"]);
+            });
+    });
+
+    it("fans out across multiple sends and multiple ports on the same node", function() {
+        var fanoutGraph = { n1: [["n2"], ["n3"]], n2: [[]], n3: [[]] };
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: {} }, { port: 1, msg: {} }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                calls.should.eql(["n1", "n2", "n3"]);
+            });
+    });
+
+    it("drains the pending queue one executeNode call at a time, never in parallel", function() {
+        var fanoutGraph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
+        var inFlight = 0;
+        var maxInFlight = 0;
+        var executeNode = function(input) {
+            inFlight++;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            return new Promise(function(resolve) {
+                setTimeout(function() {
+                    inFlight--;
+                    resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: {} }] : [] });
+                }, 5);
+            });
+        };
+        return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                maxInFlight.should.equal(1);
+            });
+    });
+
+    it("still fails loudly on the first error, without draining sibling branches", function() {
+        var fanoutGraph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n2") {
+                return Promise.resolve({ sends: [], error: { code: "NODE_ERROR", nodeId: "n2", message: "boom" } });
+            }
+            return Promise.resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: {} }] : [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                throw new Error("expected runFlow to throw");
+            }, function(err) {
+                err.nonRetryable.should.equal(true);
+                calls.should.eql(["n1", "n2"]);
+            });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - buildActivitySummary (issue #6)", function() {
+    it("combines type and name when both are present", function() {
+        buildActivitySummary({ type: "http request", name: "get httpbin" }).should.equal("http request — get httpbin");
+    });
+
+    it("falls back to just the type when name is absent/empty", function() {
+        buildActivitySummary({ type: "debug" }).should.equal("debug");
+        buildActivitySummary({ type: "debug", name: "" }).should.equal("debug");
+    });
+
+    it("returns undefined when there is no metadata at all for the node", function() {
+        should(buildActivitySummary(undefined)).be.undefined();
+        should(buildActivitySummary({})).be.undefined();
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow with createExecuteNode factory (issue #6)", function() {
+    var graph = { n1: [["n2"]], n2: [[]] };
+    var nodeMeta = { n1: { name: "start", type: "inject" }, n2: { name: "out", type: "debug" } };
+
+    it("invokes the createExecuteNode factory once per queue item, with a per-node 1-based invocation counter", function() {
+        var factoryCalls = [];
+        var makeExecuteNode = function(nodeId, invocation, meta) {
+            factoryCalls.push({ nodeId: nodeId, invocation: invocation, meta: meta });
+            return function() { return Promise.resolve({ sends: nodeId === "n1" ? [{ port: 0, msg: {} }] : [] }); };
+        };
+        return runFlow({ createExecuteNode: makeExecuteNode, graph: graph, nodeMeta: nodeMeta, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                factoryCalls.should.eql([
+                    { nodeId: "n1", invocation: 1, meta: nodeMeta },
+                    { nodeId: "n2", invocation: 1, meta: nodeMeta }
+                ]);
+            });
+    });
+
+    it("increments the invocation counter per distinct visit of the SAME node id (e.g. a fan-in revisit)", function() {
+        var revisitGraph = { n1: [["n2", "n3"]], n2: [["n4"]], n3: [["n4"]], n4: [[]] };
+        var factoryCalls = [];
+        var makeExecuteNode = function(nodeId, invocation) {
+            factoryCalls.push(nodeId + ":" + invocation);
+            return function(input) {
+                return Promise.resolve({ sends: (revisitGraph[input.nodeId] && revisitGraph[input.nodeId][0] && revisitGraph[input.nodeId][0].length) ? [{ port: 0, msg: {} }] : [] });
+            };
+        };
+        return runFlow({ createExecuteNode: makeExecuteNode, graph: revisitGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                // n4 is reached twice (once via n2, once via n3) - its invocation
+                // counter must be 1 then 2, not 1 then 1.
+                factoryCalls.should.eql(["n1:1", "n2:1", "n3:1", "n4:1", "n4:2"]);
+            });
+    });
+
+    it("prefers the createExecuteNode factory over a plain executeNode when both are given (real Workflow precedence)", function() {
+        var factoryCalls = [];
+        var executeNode = function() { throw new Error("should not be called"); };
+        var makeExecuteNode = function(nodeId) {
+            factoryCalls.push(nodeId);
+            return function() { return Promise.resolve({ sends: [] }); };
+        };
+        return runFlow({ executeNode: executeNode, createExecuteNode: makeExecuteNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                factoryCalls.should.eql(["n1"]);
+            });
+    });
 });
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow against a real bootstrapped flow (A2 #3)", function() {
@@ -139,6 +274,45 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow agains
         }, function(err) {
             err.nonRetryable.should.equal(true);
             err.message.should.containEql("FLOW_VERSION_MISMATCH");
+        });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow fan-out against a real bootstrapped flow (issue #5)", function() {
+    this.timeout(20000);
+
+    var handle;
+    var capture;
+
+    afterEach(function() {
+        if (capture) {
+            capture.uninstall();
+            capture = null;
+        }
+        if (handle) {
+            var h = handle;
+            handle = null;
+            return h.stop();
+        }
+    });
+
+    it("executes all 5 nodes of a true fan-out flow (Inject -> {Change A -> Debug A, Change B -> Debug B})", function() {
+        return bootstrap(FANOUT_FLOW).then(function(h) {
+            handle = h;
+            capture = new Capture();
+            capture.install(redUtil);
+            var invoked = [];
+            var realExecuteNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            var executeNode = function(input) {
+                invoked.push(input.nodeId);
+                return realExecuteNode(input);
+            };
+            var graph = extractWireGraph(JSON.parse(require("fs").readFileSync(FANOUT_FLOW, "utf8")));
+
+            return runFlow({ executeNode: executeNode, graph: graph, flowVersion: h.flowVersion, startNode: "n1", startMsg: { payload: 1 } })
+                .then(function() {
+                    invoked.sort().should.eql(["n1", "n2", "n3", "n4", "n5"]);
+                });
         });
     });
 });
