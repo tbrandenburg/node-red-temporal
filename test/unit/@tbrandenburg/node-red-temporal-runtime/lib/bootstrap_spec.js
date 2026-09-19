@@ -78,6 +78,57 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/bootstrap", function() {
         });
     });
 
+    it("does not accumulate comms:* listeners on the shared @node-red/util events singleton across repeated bootstrap()+stop() cycles (issue #18)", function() {
+        var redUtil = require("../../../../../packages/node_modules/@node-red/util");
+        var COMMS_EVENTS = [
+            "comms:connection-removed",
+            "comms:message:multiplayer/connect",
+            "comms:message:multiplayer/disconnect",
+            "comms:message:multiplayer/location"
+        ];
+        var warnings = [];
+        function onWarning(warning) {
+            if (warning.name === "MaxListenersExceededWarning") {
+                warnings.push(warning);
+            }
+        }
+        process.on("warning", onWarning);
+
+        // Baseline BEFORE our cycles, not an assumed 0: in a full-suite run,
+        // other (out-of-scope, upstream-owned) test files may legitimately
+        // add their own listeners to this same shared singleton earlier in
+        // the process. The bug this test guards against is OUR bootstrap()
+        // calls leaking - i.e. no net growth relative to whatever baseline
+        // already existed - not the singleton being pristine.
+        var baseline = {};
+        COMMS_EVENTS.forEach(function(name) {
+            baseline[name] = redUtil.events.listenerCount(name);
+        });
+
+        var CYCLES = 15;
+        var chain = Promise.resolve();
+        for (var i = 0; i < CYCLES; i++) {
+            chain = chain.then(function() {
+                return bootstrap(FLOW).then(function(handle) {
+                    return handle.stop();
+                });
+            });
+        }
+
+        return chain.then(function() {
+            return new Promise(function(resolve) { setImmediate(resolve); });
+        }).then(function() {
+            process.removeListener("warning", onWarning);
+            warnings.should.be.empty();
+            COMMS_EVENTS.forEach(function(name) {
+                redUtil.events.listenerCount(name).should.equal(baseline[name]);
+            });
+        }, function(err) {
+            process.removeListener("warning", onWarning);
+            throw err;
+        });
+    });
+
     it("computeFlowVersion is a pure function usable without bootstrapping a runtime", function() {
         var fs = require("fs");
         var a = JSON.parse(fs.readFileSync(FLOW, "utf8"));
