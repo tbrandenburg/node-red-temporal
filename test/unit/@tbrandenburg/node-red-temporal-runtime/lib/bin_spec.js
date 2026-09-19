@@ -108,6 +108,17 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal", functi
                 call[0].should.equal("executeFlow");
                 call[1].args[0].startNode.should.equal("n1");
                 call[1].args[0].startMsg.should.deepEqual({ payload: 21 });
+                call[1].args[0].nodeMeta.should.have.property("n1");
+                call[1].args[0].nodeMeta.n1.should.have.property("type", "inject");
+
+                // issue #6: workflow-level memo/staticSummary, so the Temporal
+                // Web UI's workflow list identifies flow/version/start-node
+                // without opening the execution's raw input.
+                call[1].memo.should.have.property("flowId", "four-node-flow");
+                call[1].memo.should.have.property("startNode", "n1");
+                call[1].memo.should.have.property("flowVersion");
+                call[1].staticSummary.should.match(/^four-node-flow@/);
+                call[1].staticSummary.should.containEql("from n1");
             });
         });
 
