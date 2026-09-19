@@ -1,0 +1,10 @@
+{
+    "name": "node-red-temporal-test-context-credential-nodes",
+    "version": "0.0.1",
+    "description": "Test-only Node-RED node package (issue #14): a config node with credentials, and a node exercising node/flow/global context, used to prove credentials/config-node sharing/context all work through the real Node-RED runtime.",
+    "node-red": {
+        "nodes": {
+            "test-nodes": "index.js"
+        }
+    }
+}
