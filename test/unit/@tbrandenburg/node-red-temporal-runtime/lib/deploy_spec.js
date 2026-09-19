@@ -251,9 +251,23 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #15 redeplo
             return result.handle.deploy(newFlow);
         }).then(function(newVersion) {
             newVersion.should.not.equal(preDeployVersion);
-            return waitUntil(function() { return startStub.callCount >= 1; }, 10000);
+            // Race guard: the scheduled Inject can fire again VERY shortly
+            // after resetHistory() but before deploy()'s node stop/restart
+            // has actually taken effect, landing one more STALE
+            // pre-deploy-flowVersion call in startStub before any
+            // post-deploy call arrives. Wait for a call that actually
+            // carries the NEW flowVersion specifically, not just "any call
+            // happened" - draining/ignoring any stale ones in between.
+            return waitUntil(function() {
+                return startStub.getCalls().some(function(call) {
+                    return call.args[1].args[0].flowVersion === newVersion;
+                });
+            }, 10000);
         }).then(function() {
-            var postDeployVersion = startStub.firstCall.args[1].args[0].flowVersion;
+            var postDeployCall = startStub.getCalls().find(function(call) {
+                return call.args[1].args[0].flowVersion !== preDeployVersion;
+            });
+            var postDeployVersion = postDeployCall.args[1].args[0].flowVersion;
             postDeployVersion.should.equal(result.handle.flowVersion);
             postDeployVersion.should.not.equal(preDeployVersion);
             createStub.calledOnce.should.equal(true); // no new Worker created
