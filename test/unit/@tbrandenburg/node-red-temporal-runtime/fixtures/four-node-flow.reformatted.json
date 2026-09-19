@@ -1,0 +1,7 @@
+[
+  {  "type": "tab" ,   "id": "tab1",   "label": "Flow 1"    },
+  { "z": "tab1", "wires": [["n2"]], "name": "start", "id": "n1", "type": "inject" },
+  { "func": "msg.payload = msg.payload * 2; return msg;", "wires": [["n3"]], "name": "double", "type": "function", "id": "n2", "z": "tab1" },
+  { "rules": [], "id": "n3", "z": "tab1", "name": "tag", "wires": [["n4"]], "type": "change" },
+  { "wires": [], "z": "tab1", "id": "n4", "type": "debug", "name": "out" }
+]

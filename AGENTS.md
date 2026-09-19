@@ -107,7 +107,25 @@ npm run mocha:core    # runtime/unit tests only, faster
 npm start             # stock Node-RED
 ```
 
+### Temporal demo (`make`)
+
+Convenience targets wrapping the Temporal-backed demo's dev-server + worker
+lifecycle (`packages/node_modules/@tbrandenburg/node-red-temporal-runtime`),
+so it doesn't need 3 manually-managed terminals. PID/log files live under
+`/tmp/node-red-temporal-demo/`, not in the repo.
+
+| Target | Description |
+|---|---|
+| `make demo-run` | Start (or reuse) a Temporal dev server, then start the demo worker — both detached. Prints the Web UI URL and worker log path. |
+| `make demo-start` | Trigger a new workflow execution against the running demo (`Inject → HTTP Request → Change → Debug`). |
+| `make demo-status` | Check whether the Temporal server and the demo worker are up. |
+| `make demo-stop` | Stop the demo worker; stops the Temporal dev server too, but only if `demo-run` started it (a reused, externally-started server is left running). |
+
 ## Current work
 
 Milestone plan and acceptance criteria: issue
 [#1 — MVP: Temporal-backed Node-RED flow execution (WSJF #1)](https://github.com/tbrandenburg/node-red-temporal/issues/1).
+
+## Lessons Learned
+
+- 2026-09-19: Pitfall: M2's capture layer patched the shared `Node.prototype.error` for the whole install()/uninstall() lifetime; a full-suite run (all specs in one mocha process) showed this leaking across unrelated node test files, causing ~80 cascading unrelated timeouts. Prevention: never patch a shared prototype/class-wide method as a global toggle — scope any such patch to a single instance and a single invocation, always restored on every exit path (resolve/reject/timeout), and verify with a full-suite run (not just the new spec file in isolation) before accepting a milestone that touches Node-RED's shared runtime classes.

@@ -1,0 +1,7 @@
+[
+    {"id": "tab1", "type": "tab", "label": "Flow 1"},
+    {"id": "n1", "type": "inject", "z": "tab1", "name": "start", "wires": [["n2"]]},
+    {"id": "n2", "type": "function", "z": "tab1", "name": "double", "func": "msg.payload = msg.payload * 2; return msg;", "wires": [["n3"]]},
+    {"id": "n3", "type": "change", "z": "tab1", "name": "tag", "rules": [], "wires": [["n4"]]},
+    {"id": "n4", "type": "debug", "z": "tab1", "name": "out", "wires": []}
+]
