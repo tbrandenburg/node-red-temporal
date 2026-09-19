@@ -305,6 +305,84 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - createWorker wire
             }
         });
     });
+
+    it("issue #12 finding 2: a first failed connectClient() does not poison later ingress - a later attempt reconnects, and a successful client is then reused", function() {
+        // Pre-existing, unrelated leak: @node-red/util's shared `events`
+        // singleton EventEmitter accumulates one "comms:*" listener per
+        // bootstrap() across this whole file's tests (never removed by
+        // handle.stop()) and hits Node's default MaxListeners(10) warning
+        // around the file's ~11th createWorker() call. That default warning
+        // handler writes via console.error, which would otherwise leak into
+        // this test's own console.error spy below. Bumping the limit here
+        // is a test-only mitigation - fixing the underlying leak is out of
+        // scope for issue #12 (see handoff Follow-up).
+        var redUtilEvents = require("../../../../../packages/node_modules/@node-red/util").events;
+        redUtilEvents.setMaxListeners(50);
+
+        var connectStub = sinon.stub();
+        connectStub.onCall(0).rejects(new Error("temporal unreachable (first attempt)"));
+        connectStub.onCall(1).resolves({});
+        var startStub = sinon.stub().resolves({ workflowId: "wf-reconnect" });
+        var originalClientModule = require.cache[CLIENT_PATH];
+        require.cache[CLIENT_PATH] = {
+            id: CLIENT_PATH,
+            filename: CLIENT_PATH,
+            loaded: true,
+            exports: {
+                Connection: { connect: connectStub },
+                Client: function() { return { workflow: { start: startStub } }; }
+            }
+        };
+
+        var result;
+        var errorSpy = sinon.stub(console, "error");
+        return createWorker(FLOW).then(function(created) {
+            result = created;
+            // First ingress: connectClient() rejects - must fail visibly
+            // (logged via console.error), no local routing fallback, and
+            // must NOT wedge future ingress attempts.
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: {} }]
+            });
+        }).then(function() {
+            errorSpy.calledOnce.should.equal(true);
+            errorSpy.firstCall.args[0].should.match(/temporal unreachable \(first attempt\)/);
+            startStub.called.should.equal(false);
+            connectStub.callCount.should.equal(1);
+
+            // Second ingress, after Temporal becomes available: reconnects
+            // successfully without needing a worker restart.
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: {} }]
+            });
+        }).then(function() {
+            startStub.calledOnce.should.equal(true);
+            connectStub.callCount.should.equal(2);
+
+            // Third ingress: the now-successful client must be REUSED, not
+            // reconnected again.
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: {} }]
+            });
+        }).then(function() {
+            startStub.calledTwice.should.equal(true);
+            connectStub.callCount.should.equal(2);
+            return result.stop();
+        }).finally(function() {
+            errorSpy.restore();
+            if (originalClientModule) {
+                require.cache[CLIENT_PATH] = originalClientModule;
+            } else {
+                delete require.cache[CLIENT_PATH];
+            }
+        });
+    });
 });
 
 // M5+M6: integration-level tests driven through a REAL, running Node-RED

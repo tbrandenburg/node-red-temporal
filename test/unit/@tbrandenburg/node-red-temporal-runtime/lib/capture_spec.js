@@ -39,6 +39,19 @@ function probeNodeModule(RED) {
                     send(msg);
                     done();
                     break;
+                case "doubleSend":
+                    // Two SEPARATE node.send() calls, same _msgid - the
+                    // exact scenario issue #12 finding 3 targets.
+                    send({ payload: "first", _msgid: msg._msgid });
+                    send({ payload: "second", _msgid: msg._msgid });
+                    done();
+                    break;
+                case "delayedForward":
+                    setTimeout(function() {
+                        send({ payload: msg.payload, _msgid: msg._msgid });
+                        done();
+                    }, msg.delayMs || 10);
+                    break;
                 default:
                     done();
             }
@@ -263,7 +276,12 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
         });
     });
 
-    it("M2-2: autonomous single-destination send (multi mode fires 3 preRoute events for one node.send loop) groups per emission", function() {
+    it("M2-2 (issue #12 finding 3): multi mode's 3 separate node.send() calls (same _msgid) are 3 DISTINCT logical emissions, not collapsed into one", function() {
+        // Node-RED's onSend hook fires once per node.send() call, so three
+        // synchronous send() calls inside one input handler tick - even
+        // sharing the same _msgid - must produce three separate onIngress
+        // groups, not one. This was the exact bug finding 3 fixed: the old
+        // setImmediate-timing-based grouping collapsed them into one.
         var ingressCalls = [];
         var postDeliverCalls = 0;
         var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
@@ -278,10 +296,10 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
             p1.receive(msg);
             return new Promise((resolve) => setImmediate(resolve));
         }).then(function() {
-            ingressCalls.length.should.equal(1);
-            ingressCalls[0].sourceNodeId.should.equal("p1");
-            ingressCalls[0].sends.length.should.equal(3);
-            ingressCalls[0].sends.map((s) => s.msg.payload).should.eql([1, 2, 3]);
+            ingressCalls.length.should.equal(3);
+            ingressCalls.forEach((call) => call.sourceNodeId.should.equal("p1"));
+            ingressCalls.forEach((call) => call.sends.length.should.equal(1));
+            ingressCalls.map((call) => call.sends[0].msg.payload).should.eql([1, 2, 3]);
             postDeliverCalls.should.equal(0);
             capture.uninstall();
             RED.hooks.remove("postDeliver.temporal-m2-2");
@@ -331,6 +349,53 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
             byMsgid["m2-4-a"].sends[0].msg.payload.should.equal("A");
             byMsgid["m2-4-b"].sends.length.should.equal(1);
             byMsgid["m2-4-b"].sends[0].msg.payload.should.equal("B");
+            capture.uninstall();
+        });
+    });
+
+    it("Q9 (issue #12 finding 1): two concurrent Activity invocations of the SAME node sharing the SAME _msgid do not cross-contaminate", function() {
+        // A naive `nodeId::_msgid` correlation key would collide these two
+        // concurrent around() calls in `_pending`, losing one invocation's
+        // resolvers/sends. AsyncLocalStorage-based correlation must keep
+        // them fully isolated regardless of shared _msgid.
+        var capture = new Capture();
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var sharedMsgid = "same-node-shared-msgid";
+            var msgA = { mode: "delayedForward", payload: "A", delayMs: 30, _msgid: sharedMsgid };
+            var msgB = { mode: "delayedForward", payload: "B", delayMs: 5, _msgid: sharedMsgid };
+            var resultA = capture.around(p1, msgA, function() { p1.receive(msgA); });
+            var resultB = capture.around(p1, msgB, function() { p1.receive(msgB); });
+            return Promise.all([resultA, resultB]);
+        }).then(function(results) {
+            results[0].sends.length.should.equal(1);
+            results[0].sends[0].msg.payload.should.equal("A");
+            results[1].sends.length.should.equal(1);
+            results[1].sends[0].msg.payload.should.equal("B");
+            capture.uninstall();
+        });
+    });
+
+    it("M2-6 (issue #12 finding 3): two synchronous node.send() calls with the same _msgid produce TWO distinct onIngress events", function() {
+        var ingressCalls = [];
+        var capture = new Capture({ onIngress: function(event) { ingressCalls.push(event); } });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "doubleSend", _msgid: "shared-double-send-msgid" };
+            p1.receive(msg);
+            return new Promise((resolve) => setImmediate(resolve));
+        }).then(function() {
+            ingressCalls.length.should.equal(2);
+            ingressCalls.forEach((call) => call.sends.length.should.equal(1));
+            ingressCalls.map((call) => call.sends[0].msg.payload).should.eql(["first", "second"]);
             capture.uninstall();
         });
     });
