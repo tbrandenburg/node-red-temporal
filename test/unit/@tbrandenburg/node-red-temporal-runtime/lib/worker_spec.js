@@ -1,7 +1,7 @@
 var should = require("should");
 var path = require("path");
 var sinon = require("sinon");
-var { Worker } = require("@temporalio/worker");
+var { Worker, NativeConnection } = require("@temporalio/worker");
 var WORKER_MODULE_PATH = require.resolve("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
 var { createWorker, WORKFLOWS_PATH } = require(WORKER_MODULE_PATH);
 
@@ -67,6 +67,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker", function() {
 
     var createStub;
     var wired;
+    var nativeConnectionStub;
 
     beforeEach(function() {
         // `Worker.create` performs real workflow-bundling (webpack) against
@@ -77,10 +78,18 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker", function() {
         // every real line of `createWorker`'s wiring logic.
         wired = { shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
+        // issue #21/#16: createActivityWorker/createWorkflowWorker now
+        // establish an explicit NativeConnection.connect() before
+        // Worker.create() (so the poll connection honors configured
+        // address). Stub it too, same "stub the SDK's own entry point"
+        // convention, so these tests never depend on a live Temporal
+        // dev server being reachable.
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
     });
 
     afterEach(function() {
         createStub.restore();
+        nativeConnectionStub.restore();
     });
 
     it("boots the flow once, installs Capture, and registers executeNode + workflowsPath with Worker.create", function() {
@@ -218,14 +227,17 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - createWorker wire
 
     var createStub;
     var wired;
+    var nativeConnectionStub;
 
     beforeEach(function() {
         wired = { shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
     });
 
     afterEach(function() {
         createStub.restore();
+        nativeConnectionStub.restore();
     });
 
     it("defaults captureOptions.onIngress to the real ingress-start wiring (a function) when not overridden", function() {
@@ -396,10 +408,12 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - M5/M6 real-flow i
     var wired;
     var result;
     var restoreClient;
+    var nativeConnectionStub;
 
     beforeEach(function() {
         wired = { shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
         result = null;
         restoreClient = null;
     });
@@ -408,6 +422,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - M5/M6 real-flow i
         var stopPromise = result ? result.stop() : Promise.resolve();
         return stopPromise.finally(function() {
             createStub.restore();
+            nativeConnectionStub.restore();
             if (restoreClient) {
                 restoreClient();
             }
@@ -525,5 +540,155 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - M5/M6 real-flow i
             ]);
             args.args[0].initial[0].nodeId.should.not.equal("n1");
         });
+    });
+});
+
+// issue #16: role decomposition - proves the Workflow-only role never boots
+// Node-RED/bootstrap(), the Activity role registers Activities and boots
+// Node-RED, the Combined role preserves today's single-queue behavior, and
+// custom Temporal config (address/namespace/queues) is passed through to
+// Worker.create()/NativeConnection.connect() rather than silently replaced.
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #16 role decomposition", function() {
+    this.timeout(20000);
+
+    var worker = require(WORKER_MODULE_PATH);
+    var createStub;
+    var wired;
+    var nativeConnectionStub;
+    var bootstrapModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
+
+    beforeEach(function() {
+        wired = { shutdown: sinon.stub() };
+        createStub = sinon.stub(Worker, "create").resolves(wired);
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
+    });
+
+    afterEach(function() {
+        createStub.restore();
+        nativeConnectionStub.restore();
+    });
+
+    it("createWorkflowWorker never calls bootstrap() and never boots Node-RED", function() {
+        var bootstrapSpy = sinon.spy(bootstrapModule, "bootstrap");
+        return worker.createWorkflowWorker().then(function(result) {
+            bootstrapSpy.called.should.equal(false);
+            result.worker.should.equal(wired);
+            result.should.not.have.property("handle");
+            result.should.not.have.property("capture");
+            return result.stop();
+        }).finally(function() {
+            bootstrapSpy.restore();
+        });
+    });
+
+    it("createWorkflowWorker polls only the (default) Workflow Task Queue and honors NativeConnection", function() {
+        return worker.createWorkflowWorker().then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            opts.taskQueue.should.equal(result.temporalConfig.workflowTaskQueue);
+            should.not.exist(opts.activities);
+            nativeConnectionStub.calledOnce.should.equal(true);
+            nativeConnectionStub.firstCall.args[0].address.should.equal(result.temporalConfig.address);
+            return result.stop();
+        });
+    });
+
+    it("createActivityWorker boots Node-RED, installs Capture, and registers executeNode on the Activity Task Queue", function() {
+        return worker.createActivityWorker(FLOW).then(function(result) {
+            result.handle.should.be.an.Object();
+            result.capture._onIngress.should.be.a.Function();
+            var opts = createStub.firstCall.args[0];
+            opts.activities.executeNode.should.be.a.Function();
+            opts.taskQueue.should.equal(result.temporalConfig.activityTaskQueue);
+            return result.stop();
+        });
+    });
+
+    it("createActivityWorker requires a flow file (source ingress/Node-RED is only ever hosted here)", function() {
+        return worker.createActivityWorker().then(function() {
+            throw new Error("expected createActivityWorker() to reject without a flow file");
+        }, function(err) {
+            err.should.be.an.Error();
+        });
+    });
+
+    it("createCombinedWorker preserves today's single-shared-queue behavior when queues are not overridden", function() {
+        return worker.createCombinedWorker(FLOW).then(function(result) {
+            createStub.calledOnce.should.equal(true);
+            var opts = createStub.firstCall.args[0];
+            opts.taskQueue.should.equal("node-red-temporal");
+            opts.workflowsPath.should.equal(WORKFLOWS_PATH);
+            opts.activities.executeNode.should.be.a.Function();
+            should.not.exist(result.workflowWorker);
+            return result.stop();
+        });
+    });
+
+    it("createCombinedWorker creates two independently-configured Workers when workflow/activity queues differ", function() {
+        return worker.createCombinedWorker(FLOW, {
+            temporal: { workflowTaskQueue: "wf-q", activityTaskQueue: "act-q" }
+        }).then(function(result) {
+            createStub.calledTwice.should.equal(true);
+            var activityOpts = createStub.firstCall.args[0];
+            var workflowOpts = createStub.secondCall.args[0];
+            activityOpts.taskQueue.should.equal("act-q");
+            workflowOpts.taskQueue.should.equal("wf-q");
+            result.workflowWorker.should.be.an.Object();
+            return result.stop();
+        });
+    });
+
+    it("custom namespace/address/workerOptions are passed through to Worker.create(), not silently replaced (issue #21)", function() {
+        return worker.createActivityWorker(FLOW, {
+            temporal: { address: "10.0.0.5:9999", namespace: "custom-ns", activityTaskQueue: "custom-activity-q" },
+            workerOptions: { maxConcurrentActivityTaskExecutions: 3 }
+        }).then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            opts.namespace.should.equal("custom-ns");
+            opts.taskQueue.should.equal("custom-activity-q");
+            opts.maxConcurrentActivityTaskExecutions.should.equal(3);
+            nativeConnectionStub.firstCall.args[0].address.should.equal("10.0.0.5:9999");
+            result.temporalConfig.address.should.equal("10.0.0.5:9999");
+            return result.stop();
+        });
+    });
+
+    it("source-ingress-started Workflows target the configured Workflow Task Queue and carry the configured Activity Task Queue (fixes #27)", function() {
+        var startStub = sinon.stub().resolves({ workflowId: "wf-1" });
+        var restore = stubClientModule(startStub);
+        return worker.createActivityWorker(FLOW, {
+            temporal: { workflowTaskQueue: "custom-wf-q", activityTaskQueue: "custom-act-q" }
+        }).then(function(result) {
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: {} }]
+            }).then(function() {
+                startStub.calledOnce.should.equal(true);
+                var args = startStub.firstCall.args[1];
+                args.taskQueue.should.equal("custom-wf-q");
+                args.args[0].activityTaskQueue.should.equal("custom-act-q");
+                return result.stop();
+            });
+        }).finally(function() {
+            restore();
+        });
+    });
+
+    it("stop() calls Worker.shutdown(), Capture.uninstall(), and Node-RED handle.stop() for the Activity role", function() {
+        return worker.createActivityWorker(FLOW).then(function(result) {
+            var stopSpy = sinon.spy(result.handle, "stop");
+            return result.stop().then(function() {
+                wired.shutdown.calledOnce.should.equal(true);
+                stopSpy.calledOnce.should.equal(true);
+            });
+        });
+    });
+
+    it("resolveTemporalConfig falls back to env vars, then to today's local defaults", function() {
+        var config = worker.resolveTemporalConfig();
+        config.address.should.equal(process.env.TEMPORAL_ADDRESS || "127.0.0.1:7233");
+        config.namespace.should.equal(process.env.TEMPORAL_NAMESPACE || "default");
+        config.workflowTaskQueue.should.equal(process.env.TEMPORAL_WORKFLOW_TASK_QUEUE || "node-red-temporal");
+        config.activityTaskQueue.should.equal(process.env.TEMPORAL_ACTIVITY_TASK_QUEUE || "node-red-temporal");
     });
 });

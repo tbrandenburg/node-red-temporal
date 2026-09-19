@@ -149,3 +149,52 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal", functi
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #16 role selection", function() {
+    it("worker --role workflow requires no --flow flag (parsed correctly, no error thrown by parseArgs)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        var values = bin.parseArgs(["--role", "workflow"]);
+        values.role.should.equal("workflow");
+        should.not.exist(values.flow);
+    });
+
+    it("worker --role activity without --flow rejects with a clear error (runWorker)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--flow <path> is required for --role activity/);
+        });
+    });
+
+    it("worker --role combined without --flow rejects with a clear error (runWorker)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "combined" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--flow <path> is required/);
+        });
+    });
+
+    it("worker --role bogus rejects with a clear 'unknown role' error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "bogus" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/unknown --role "bogus"/);
+        });
+    });
+
+    it("--help lists the worker --role subcommand and Temporal config flags", function() {
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--role combined\|workflow\|activity/);
+        out.should.match(/--address/);
+        out.should.match(/--namespace/);
+        out.should.match(/--workflow-task-queue/);
+        out.should.match(/--activity-task-queue/);
+    });
+});
