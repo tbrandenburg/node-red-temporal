@@ -1,6 +1,6 @@
 var should = require("should");
 var path = require("path");
-var { resolveDestinations, runFlow } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/workflows.js");
+var { resolveDestinations, runFlow, createExecuteNode: makeExecuteNodeProxy, buildActivitySummary } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/workflows.js");
 var { extractWireGraph } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/wireGraph.js");
 var { bootstrap } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
 var { Capture } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/capture.js");
@@ -167,6 +167,72 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow", func
             }, function(err) {
                 err.nonRetryable.should.equal(true);
                 calls.should.eql(["n1", "n2"]);
+            });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - buildActivitySummary (issue #6)", function() {
+    it("combines type and name when both are present", function() {
+        buildActivitySummary({ type: "http request", name: "get httpbin" }).should.equal("http request — get httpbin");
+    });
+
+    it("falls back to just the type when name is absent/empty", function() {
+        buildActivitySummary({ type: "debug" }).should.equal("debug");
+        buildActivitySummary({ type: "debug", name: "" }).should.equal("debug");
+    });
+
+    it("returns undefined when there is no metadata at all for the node", function() {
+        should(buildActivitySummary(undefined)).be.undefined();
+        should(buildActivitySummary({})).be.undefined();
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - runFlow with createExecuteNode factory (issue #6)", function() {
+    var graph = { n1: [["n2"]], n2: [[]] };
+    var nodeMeta = { n1: { name: "start", type: "inject" }, n2: { name: "out", type: "debug" } };
+
+    it("invokes the createExecuteNode factory once per queue item, with a per-node 1-based invocation counter", function() {
+        var factoryCalls = [];
+        var makeExecuteNode = function(nodeId, invocation, meta) {
+            factoryCalls.push({ nodeId: nodeId, invocation: invocation, meta: meta });
+            return function() { return Promise.resolve({ sends: nodeId === "n1" ? [{ port: 0, msg: {} }] : [] }); };
+        };
+        return runFlow({ createExecuteNode: makeExecuteNode, graph: graph, nodeMeta: nodeMeta, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                factoryCalls.should.eql([
+                    { nodeId: "n1", invocation: 1, meta: nodeMeta },
+                    { nodeId: "n2", invocation: 1, meta: nodeMeta }
+                ]);
+            });
+    });
+
+    it("increments the invocation counter per distinct visit of the SAME node id (e.g. a fan-in revisit)", function() {
+        var revisitGraph = { n1: [["n2", "n3"]], n2: [["n4"]], n3: [["n4"]], n4: [[]] };
+        var factoryCalls = [];
+        var makeExecuteNode = function(nodeId, invocation) {
+            factoryCalls.push(nodeId + ":" + invocation);
+            return function(input) {
+                return Promise.resolve({ sends: (revisitGraph[input.nodeId] && revisitGraph[input.nodeId][0] && revisitGraph[input.nodeId][0].length) ? [{ port: 0, msg: {} }] : [] });
+            };
+        };
+        return runFlow({ createExecuteNode: makeExecuteNode, graph: revisitGraph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                // n4 is reached twice (once via n2, once via n3) - its invocation
+                // counter must be 1 then 2, not 1 then 1.
+                factoryCalls.should.eql(["n1:1", "n2:1", "n3:1", "n4:1", "n4:2"]);
+            });
+    });
+
+    it("prefers the createExecuteNode factory over a plain executeNode when both are given (real Workflow precedence)", function() {
+        var factoryCalls = [];
+        var executeNode = function() { throw new Error("should not be called"); };
+        var makeExecuteNode = function(nodeId) {
+            factoryCalls.push(nodeId);
+            return function() { return Promise.resolve({ sends: [] }); };
+        };
+        return runFlow({ executeNode: executeNode, createExecuteNode: makeExecuteNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function() {
+                factoryCalls.should.eql(["n1"]);
             });
     });
 });
