@@ -1,15 +1,15 @@
 var should = require("should");
 var path = require("path");
 var RED = require("nr-test-utils").require("node-red/lib/red");
-var { bootstrap } = require("../../../../../packages/node_modules/@yourorg/node-red-temporal-runtime/lib/bootstrap.js");
-var { Capture } = require("../../../../../packages/node_modules/@yourorg/node-red-temporal-runtime/lib/capture.js");
-var { createExecuteNode } = require("../../../../../packages/node_modules/@yourorg/node-red-temporal-runtime/lib/activities.js");
+var { bootstrap } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
+var { Capture } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/capture.js");
+var { createExecuteNode } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/activities.js");
 
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FLOW = path.join(FIXTURES, "four-node-flow.json");
 var ERROR_FLOW = path.join(FIXTURES, "error-flow.json");
 
-describe("@yourorg/node-red-temporal-runtime/lib/activities", function() {
+describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
     this.timeout(20000);
 
     var handle;

@@ -1,11 +1,11 @@
 var should = require("should");
 var path = require("path");
-var { extractWireGraph } = require("../../../../../packages/node_modules/@yourorg/node-red-temporal-runtime/lib/wireGraph.js");
+var { extractWireGraph } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/wireGraph.js");
 
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FOUR_NODE_FLOW = require(path.join(FIXTURES, "four-node-flow.json"));
 
-describe("@yourorg/node-red-temporal-runtime/lib/wireGraph", function() {
+describe("@tbrandenburg/node-red-temporal-runtime/lib/wireGraph", function() {
     it("extracts a wire graph from the four-node demo flow, omitting the tab", function() {
         var graph = extractWireGraph(FOUR_NODE_FLOW);
         graph.should.eql({

@@ -1,7 +1,7 @@
 var should = require("should");
 var path = require("path");
 var EventEmitter = require("events").EventEmitter;
-var { bootstrap, computeFlowVersion } = require("../../../../../packages/node_modules/@yourorg/node-red-temporal-runtime/lib/bootstrap.js");
+var { bootstrap, computeFlowVersion } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
 
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FLOW = path.join(FIXTURES, "four-node-flow.json");
@@ -9,7 +9,7 @@ var FLOW_REFORMATTED = path.join(FIXTURES, "four-node-flow.reformatted.json");
 var FLOW_CHANGED = path.join(FIXTURES, "four-node-flow.changed.json");
 var NODE_IDS = ["n1", "n2", "n3", "n4"];
 
-describe("@yourorg/node-red-temporal-runtime/lib/bootstrap", function() {
+describe("@tbrandenburg/node-red-temporal-runtime/lib/bootstrap", function() {
     this.timeout(20000);
 
     var runtimeHandle;

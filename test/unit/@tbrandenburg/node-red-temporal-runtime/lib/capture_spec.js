@@ -1,7 +1,7 @@
 var should = require("should");
 var helper = require("node-red-node-test-helper");
 var RED = require("nr-test-utils").require("node-red/lib/red");
-var { Capture, DEFAULT_TIMEOUT_MS } = require("../../../../../packages/node_modules/@yourorg/node-red-temporal-runtime/lib/capture.js");
+var { Capture, DEFAULT_TIMEOUT_MS } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/capture.js");
 
 // A single configurable "probe" node used to drive every scenario in the
 // spec below via msg.mode. Real Node-RED node registered through the real
@@ -47,7 +47,7 @@ function probeNodeModule(RED) {
     RED.nodes.registerType("temporal-probe", ProbeNode);
 }
 
-describe("@yourorg/node-red-temporal-runtime/lib/capture", function() {
+describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
 
     beforeEach(function(done) {
         helper.startServer(done);
