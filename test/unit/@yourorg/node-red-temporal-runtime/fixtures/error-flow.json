@@ -1,0 +1,4 @@
+[
+    {"id": "tab1", "type": "tab", "label": "Flow 1"},
+    {"id": "e1", "type": "function", "z": "tab1", "name": "boom", "func": "throw new Error('boom');", "wires": [[]]}
+]
