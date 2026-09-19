@@ -21,7 +21,7 @@ var should = require("should");
 var path = require("path");
 var fs = require("fs");
 var sinon = require("sinon");
-var { Worker } = require("@temporalio/worker");
+var { Worker, NativeConnection } = require("@temporalio/worker");
 var { bootstrap } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
 var { Capture } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/capture.js");
 var { createExecuteNode } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/activities.js");
@@ -199,6 +199,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #15 redeplo
     this.timeout(20000);
 
     var createStub;
+    var nativeConnectionStub;
     var wired;
     var result;
     var restoreClient;
@@ -206,11 +207,20 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #15 redeplo
     beforeEach(function() {
         wired = { shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
+        // issue #16: createActivityWorker/createWorkflowWorker now open a
+        // REAL NativeConnection.connect() before Worker.create() (fixes
+        // issue #21 - the Worker's own poll connection now honors the
+        // configured address). Stub it here too, alongside Worker.create,
+        // so this suite never attempts a real network connection - without
+        // this, these tests would hang/fail wherever no real Temporal dev
+        // server is reachable on the default address (e.g. CI).
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
         result = null;
         restoreClient = null;
     });
 
     afterEach(function() {
+        nativeConnectionStub.restore();
         var stopPromise = result ? result.stop() : Promise.resolve();
         return stopPromise.finally(function() {
             createStub.restore();
