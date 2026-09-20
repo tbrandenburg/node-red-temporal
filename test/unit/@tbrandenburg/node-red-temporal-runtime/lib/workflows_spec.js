@@ -496,7 +496,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         }
     });
 
-    function runWithRealFlow(flowFile, startNode, startMsg) {
+    function runWithRealFlow(flowFile, startNode, startMsg, maxNodeExecutions) {
         return bootstrap(flowFile).then(function(h) {
             handle = h;
             capture = new Capture();
@@ -510,7 +510,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             // graph deliberately NOT extracted from flowFile (or extracted but
             // irrelevant for link-flow) - proves the run is driven entirely by
             // Node-RED's own resolved destinationId, not by a wire-graph lookup.
-            return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: startNode, startMsg: startMsg })
+            return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: startNode, startMsg: startMsg, maxNodeExecutions: maxNodeExecutions })
                 .then(function(result) {
                     return { invoked: invoked, result: result };
                 });
@@ -578,6 +578,46 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }).then(function(r) {
             r.invoked.should.eql(["loop1", "loop1", "loop1", "n2"]);
         });
+    });
+
+    it("issue #34: a finite loop below the configured maxNodeExecutions limit is unaffected", function() {
+        // LOOP_FLOW naturally terminates after 4 total node executions
+        // (loop1 x3, then n2) - a limit comfortably above that must not
+        // change behavior at all.
+        return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }, 10).then(function(r) {
+            r.invoked.should.eql(["loop1", "loop1", "loop1", "n2"]);
+        });
+    });
+
+    it("issue #34: a loop that would exceed maxNodeExecutions fails fast with a non-retryable FLOW_EXECUTION_LIMIT error instead of running to natural completion", function() {
+        // Same finite LOOP_FLOW fixture, but with a maxNodeExecutions so low
+        // (2) that it trips BEFORE the loop's own natural 4-execution
+        // termination - proves the limit is enforced deterministically and
+        // does not depend on a truly-infinite fixture to exercise it.
+        return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }, 2).then(function() {
+            throw new Error("expected runFlow to throw FLOW_EXECUTION_LIMIT");
+        }, function(err) {
+            err.type.should.equal("FLOW_EXECUTION_LIMIT");
+            err.nonRetryable.should.equal(true);
+        });
+    });
+
+    it("issue #34: every scheduled node invocation in a fan-out wave counts toward the limit, not just one per wave", function() {
+        // n1 fans out to n3 AND n4 (2 executions in wave 2) after itself (1
+        // execution in wave 1) = 3 total. A limit of 2 must trip on the
+        // fan-out wave even though only 1 "logical" node produced it,
+        // proving the counter counts invocations, not waves or source nodes.
+        var fanoutGraph = { n1: [["n3", "n4"]], n3: [[]], n4: [[]] };
+        var executeNode = function(input) {
+            return Promise.resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: {} }, { port: 0, msg: {} }] : [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {}, maxNodeExecutions: 2 })
+            .then(function() {
+                throw new Error("expected runFlow to throw FLOW_EXECUTION_LIMIT");
+            }, function(err) {
+                err.type.should.equal("FLOW_EXECUTION_LIMIT");
+                err.nonRetryable.should.equal(true);
+            });
     });
 
     it("issue #23: a subflow instance executes through its normal Node-RED runtime representation - the subflow's OWN internal routing (n2 -> its internal doubling function) is no longer suppressed/timed out, and the subflow's real external hop to n3 is still captured", function() {
