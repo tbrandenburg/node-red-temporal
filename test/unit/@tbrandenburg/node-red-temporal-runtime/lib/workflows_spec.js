@@ -602,46 +602,44 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         });
     });
 
-    it("issue #24: wave-based drain fixes the SCHEDULING deadlock, but a separate pre-existing capture.js ALS-attribution bug still surfaces as NODE_TIMEOUT for this real Join node (KNOWN LIMITATION, narrower than before)", function() {
+    it("issue #31: real Join node (count-based fan-in) completes successfully - wave-based drain (#24) plus msg-identity ALS fallback (#31) fix both the scheduling deadlock and the capture.js correlation bug (previously a KNOWN LIMITATION)", function() {
         // n1 fans out to n2 and n3, both feeding join1 (count: 2). Before
-        // this fix, the strictly-sequential drain awaited n2->join1's own
+        // #24's fix, the strictly-sequential drain awaited n2->join1's own
         // executeNode call to settle BEFORE ever calling n3 - so n3 (the
         // only source of join1's second required message) was NEVER
         // scheduled: a pure scheduling deadlock. The wave-based drain fixes
         // exactly that: n2 and n3 now land in the same wave and are
         // dispatched together via Promise.all, so join1 DOES receive both
-        // messages and DOES produce its joined send (confirmed by direct
-        // instrumentation of capture.js during investigation - join1 itself
-        // successfully emits to n4).
+        // messages and DOES produce its joined send.
         //
-        // However, running the REAL join-flow.json fixture end-to-end still
-        // throws NODE_TIMEOUT - for a DIFFERENT, narrower reason than
-        // before, and NOT a regression introduced by this fix: Node-RED's
-        // own `join` node (17-split.js's custom/count mode) defers the
-        // FIRST arriving message's `done()` callback and only invokes it
-        // (together with the second message's own `done()`) from within the
-        // SECOND message's synchronous `node.receive()` call stack
-        // (`completeSend`'s `group.dones.forEach(f => f())`). Capture's
-        // AsyncLocalStorage-based correlation (capture.js `around()`) assumes
-        // each invocation's own `done()` fires within ITS OWN call stack;
-        // here the first invocation's `done()` fires attributed to the
-        // SECOND invocation's ALS context instead, so the first join1
-        // invocation's own Activity promise never settles and times out.
-        // This is a capture.js-level limitation (a node deferring/batching
-        // `done()` calls across two live invocations), out of scope for this
-        // fix (capture.js is explicitly not touched here) - flagged as a
-        // follow-up rather than silently left unexplained.
+        // That alone still wasn't enough: Node-RED's own `join` node
+        // (17-split.js's custom/count mode) defers the FIRST arriving
+        // message's `done()` callback and only invokes it (together with
+        // the second message's own `done()`) from within the SECOND
+        // message's synchronous `node.receive()` call stack (`completeSend`'s
+        // `group.dones.forEach(f => f())`). capture.js's `around()`/
+        // `_onComplete()` used to assume each invocation's own `done()`
+        // fires within ITS OWN AsyncLocalStorage call stack; here the first
+        // invocation's `done()` used to be attributed to the SECOND
+        // invocation's ALS context instead, so the first join1 invocation's
+        // own Activity promise never settled and timed out (NODE_TIMEOUT).
+        //
+        // Fix (issue #31): capture.js now stores the exact `msg` object on
+        // each pending entry and resolves `onComplete` events by matching
+        // `completeEvent.msg` identity against pending entries for that
+        // node, falling back away from the ALS-derived invocationId when it
+        // doesn't match - correctly attributing the deferred `done()` back
+        // to the FIRST (owning) invocation. The join flow now resolves
+        // successfully end-to-end, with join1's joined message reaching n4.
         return bootstrap(JOIN_FLOW).then(function(h) {
             handle = h;
             capture = new Capture({ timeoutMs: 500 });
             capture.install(redUtil);
             var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
             return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: "n1", startMsg: { payload: 1, _msgid: "join-1" } });
-        }).then(function() {
-            throw new Error("expected runFlow to throw (capture.js ALS-attribution limitation, see comment above)");
-        }, function(err) {
-            err.nonRetryable.should.equal(true);
-            err.message.should.containEql("NODE_TIMEOUT");
+        }).then(function(result) {
+            should(result).be.ok();
+            result.lastNode.should.equal("n4");
         });
     });
 
