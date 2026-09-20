@@ -64,10 +64,13 @@ release:
 	fi; \
 	version=$$(cd "$(RUNTIME_DIR)" && npm version "$$(printf '%s' "$(BUMP)" | tr '[:upper:]' '[:lower:]')" --no-git-tag-version); \
 	tag="$(RELEASE_TAG_PREFIX)$${version#v}"; \
+	branch=$$(git rev-parse --abbrev-ref HEAD); \
 	git add "$(RUNTIME_DIR)/package.json"; \
 	git commit -m "release: Temporal runtime $${version#v}"; \
 	git tag -a "$$tag" -m "Temporal runtime $${version#v}"; \
-	gh release create "$$tag" --repo tbrandenburg/node-red-temporal --title "Temporal runtime $${version#v}" --generate-notes
+	git push origin "$$branch"; \
+	git push origin "$$tag"; \
+	gh release create "$$tag" --target "$$(git rev-parse HEAD)" --repo tbrandenburg/node-red-temporal --title "Temporal runtime $${version#v}" --generate-notes
 
 ## run: start (or reuse) Temporal + runner B + editor A, all detached.
 ## Usage: make run [FLOW=path/to/flows.json]

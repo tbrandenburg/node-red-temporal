@@ -257,9 +257,14 @@ not publish or version the upstream Node-RED packages.
 | `make publish` | Publish only the runtime package to npm with public access. Requires npm credentials with access to the `@tbrandenburg` scope. |
 | `make release BUMP=PATCH\|MINOR\|MAJOR` | Use `npm version` to bump only the runtime package, commit the bump, create a `temporal-v<version>` Git tag, and create the GitHub release in `tbrandenburg/node-red-temporal`. Requires a clean worktree. Does not publish to npm. |
 
-The release target creates the version commit and tag locally; `gh release
-create` publishes the GitHub release and tag to the fork. Never aim these
-commands at `node-red/node-red` or the read-only `upstream` remote.
+The release target creates the version commit and tag locally, pushes both
+to `origin` (branch + tag) first, then runs `gh release create` pinned to
+that exact commit via `--target`. The explicit push-before-release ordering
+matters: `gh release create` creates a missing tag against the remote
+default branch's *current* tip via the GitHub API, not from the local tag
+object — calling it before pushing silently produces a release tag that
+doesn't point at the actual version-bump commit. Never aim these commands at
+`node-red/node-red` or the read-only `upstream` remote.
 
 ### Existing editor → remote runner (issue #39)
 
