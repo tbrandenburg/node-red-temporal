@@ -125,6 +125,30 @@ the local Postgres/Temporal/Temporal UI services are never started or
 stopped by this command, and `make docker-stop` never touches an externally
 managed Temporal server.
 
+### Running `temporal` CLI commands against the Docker stack
+
+The `temporal` CLI binary already lives inside the running `temporal`
+service container (the same binary its healthcheck uses), so the simplest
+way to run ad-hoc CLI commands against the local stack is `docker compose
+exec` into that container, targeting its own IP rather than the `temporal`
+DNS alias:
+
+```bash
+docker compose exec temporal sh -lc 'temporal operator cluster health --address "$(hostname -i):7233"'
+docker compose exec temporal sh -lc 'temporal operator namespace list --address "$(hostname -i):7233"'
+docker compose exec temporal sh -lc 'temporal workflow list --address "$(hostname -i):7233" --namespace default'
+```
+
+A separate `temporal-tools` (`temporalio/admin-tools`) container used to be
+offered for this, but it doesn't work: the bundled CLI reliably times out
+("failed reaching server: context deadline exceeded") when addressed via the
+Compose DNS alias `temporal:7233` from a different container, even though
+the same address works fine for the Node.js Temporal SDK client used by
+runner B. This is a known upstream limitation (see
+[temporalio/docker-compose#234](https://github.com/temporalio/docker-compose/issues/234)),
+not something specific to this repo, so the `temporal-tools` service has
+been removed rather than worked around.
+
 ## How it works
 
 ```mermaid
@@ -276,6 +300,7 @@ This is an early alpha. Important boundaries are explicit:
 - **Not every JavaScript object is a durable message.** Circular objects, functions and live sockets/streams cannot safely cross the Temporal serialization boundary. Buffer/Date/Error behavior is documented in the runtime package README.
 - **Inbound `HTTP In → HTTP Response` bridging is not implemented.** Those live `req`/`res` objects are outside the current durable message boundary; outbound `http request` is unaffected and supported (see [HTTP compatibility](#http-compatibility)).
 - **Hooks are process-global.** Run one Capture instance per Node-RED Activity-worker process.
+- **Legacy (pre-1.0) `on('input', function(msg))` node handlers fail fast, not silently.** Nodes that never receive/call a `done()` callback cannot be tracked for completion by Node-RED itself, so their Activity now fails immediately with an explicit `LEGACY_NODE_NO_DONE` error instead of hanging for the full node-execution timeout; see the runtime package's [`COMPATIBILITY.md`](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/COMPATIBILITY.md#legacy-pre-10-input-handler-nodes-issue-53-resolution).
 - **Performance is not yet characterized.** No production throughput, batching or autoscaling guidance is claimed.
 
 For the detailed serialization table and recovery semantics, see the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md).

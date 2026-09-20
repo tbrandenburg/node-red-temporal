@@ -4,9 +4,6 @@
 #   postgres      - persistence for the local Temporal server (postgres:16)
 #   temporal      - Temporal server with bundled schema auto-setup
 #   temporal-ui   - Temporal Web UI
-#   temporal-tools - optional Temporal CLI/admin tools (profile: tools, never
-#                    starts by default; run with
-#                    `docker compose run --rm temporal-tools temporal ...`)
 #   dev           - the project's own development container (Dockerfile.dev):
 #                   ordinary Node-RED editor A + node-red-temporal runner B
 #
@@ -14,7 +11,17 @@
 #   postgres:16
 #   temporalio/auto-setup:1.29.7               (see note below - 1.32.0 does not exist)
 #   temporalio/ui:2.54.1
-#   temporalio/admin-tools:1.29.7-tctl-1.18.4-cli-1.7.2  (matched to auto-setup above)
+#
+# NOTE (issue #56): a `temporal-tools` (temporalio/admin-tools) service used
+# to be offered here for ad-hoc `temporal` CLI access, but it never worked -
+# the bundled CLI times out ("failed reaching server: context deadline
+# exceeded") when addressed via the Compose DNS alias `temporal:7233`, a
+# known upstream limitation (see temporalio/docker-compose#234/#225), even
+# though the same address works fine for the Node.js Temporal SDK client
+# used by runner B. It has been removed; see the README's Docker section for
+# the verified working way to run `temporal` CLI commands against this
+# stack (`docker compose exec temporal ...`, the same binary the healthcheck
+# below already proves works from inside that container).
 #
 # NOTE on version deviation: the M0-pinned auto-setup/admin-tools version
 # (1.32.0) does not exist on Docker Hub for `temporalio/auto-setup` - that
@@ -82,17 +89,6 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
     ports:
       - "8233:8080"
-
-  temporal-tools:
-    image: temporalio/admin-tools:1.29.7-tctl-1.18.4-cli-1.7.2
-    environment:
-      TEMPORAL_ADDRESS: temporal:7233
-    depends_on:
-      temporal:
-        condition: service_healthy
-    stdin_open: true
-    tty: true
-    profiles: ["tools"]
 
   dev:
     build:
