@@ -125,6 +125,30 @@ the local Postgres/Temporal/Temporal UI services are never started or
 stopped by this command, and `make docker-stop` never touches an externally
 managed Temporal server.
 
+### Running `temporal` CLI commands against the Docker stack
+
+The `temporal` CLI binary already lives inside the running `temporal`
+service container (the same binary its healthcheck uses), so the simplest
+way to run ad-hoc CLI commands against the local stack is `docker compose
+exec` into that container, targeting its own IP rather than the `temporal`
+DNS alias:
+
+```bash
+docker compose exec temporal sh -lc 'temporal operator cluster health --address "$(hostname -i):7233"'
+docker compose exec temporal sh -lc 'temporal operator namespace list --address "$(hostname -i):7233"'
+docker compose exec temporal sh -lc 'temporal workflow list --address "$(hostname -i):7233" --namespace default'
+```
+
+A separate `temporal-tools` (`temporalio/admin-tools`) container used to be
+offered for this, but it doesn't work: the bundled CLI reliably times out
+("failed reaching server: context deadline exceeded") when addressed via the
+Compose DNS alias `temporal:7233` from a different container, even though
+the same address works fine for the Node.js Temporal SDK client used by
+runner B. This is a known upstream limitation (see
+[temporalio/docker-compose#234](https://github.com/temporalio/docker-compose/issues/234)),
+not something specific to this repo, so the `temporal-tools` service has
+been removed rather than worked around.
+
 ## How it works
 
 ```mermaid
