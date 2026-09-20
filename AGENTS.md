@@ -180,6 +180,14 @@ accepting the diff. All new code lives in a separate package that depends on ups
   survives a worker restart. Context/config state is still worker-local process memory by default
   (the in-memory context store), and Temporal itself never makes context durable — only an explicitly
   configured persistent store does.
+- **An existing, ordinary Node-RED editor can deploy to a remote runner (issue #39).**
+  `lib/remoteDeployStorage.js` is a thin delegating `storageModule` adapter installed on the editor
+  instance ("A"): it saves locally via the wrapped delegate unchanged, then performs one full-only
+  v2 `POST /flows` (never forwarding A's `rev`) to a runner ("B") started via `bootstrap.js`'s opt-in
+  `options.adminApi` (`--admin-port`/`--admin-host` on the CLI), which boots Node-RED's stock Admin
+  API with `disableEditor: true`. A never boots a second editor and B never modifies
+  `@node-red/editor-api`. A's local save happening before the remote call is intentional — a failed
+  remote deploy surfaces as a normal Deploy error, it does not roll back A's local save.
 
 ## Known limitations (state these explicitly; never paper over them)
 
