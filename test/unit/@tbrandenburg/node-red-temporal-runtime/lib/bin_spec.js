@@ -18,6 +18,14 @@ var CLIENT_PATH = require.resolve("@temporalio/client");
 
 describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal", function() {
     describe("CLI process (spawned, no network calls)", function() {
+        // Each test here spawns a real Node process; the default 3000ms
+        // mocha timeout (.mocharc.json, upstream-owned) is occasionally too
+        // tight under full-suite CPU contention (many concurrent mocha/nyc
+        // processes), causing flaky timeouts unrelated to actual behavior.
+        // A generous per-suite timeout absorbs that without masking a real
+        // hang (still fails fast on an actual infinite loop/deadlock).
+        this.timeout(15000);
+
         it("--help prints usage and exits 0", function() {
             var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
             out.should.match(/Usage: node-red-temporal/);
@@ -190,6 +198,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
     });
 
     it("--help lists the worker --role subcommand and Temporal config flags", function() {
+        this.timeout(15000); // spawns a real Node process, see other block's comment
         var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
         out.should.match(/--role combined\|workflow\|activity/);
         out.should.match(/--address/);
@@ -250,6 +259,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
     });
 
     it("--help documents --user-dir and --settings", function() {
+        this.timeout(15000); // spawns a real Node process, see other block's comment
         var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
         out.should.match(/--user-dir/);
         out.should.match(/--settings/);
@@ -401,6 +411,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
     });
 
     it("--help lists --node-timeout-ms", function() {
+        this.timeout(15000); // spawns a real Node process, see other block's comment
         var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
         out.should.match(/--node-timeout-ms/);
     });

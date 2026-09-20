@@ -43,6 +43,31 @@ describe("@tbrandenburg/node-red-temporal-runtime/run/generate-editor-settings",
         should(settings.storageModule).be.an.Object();
     });
 
+    it("also wires issues #59/#61 by default: httpAdminMiddleware proxy and a started events receiver", function() {
+        execFileSync(process.execPath, [
+            SCRIPT, "--user-dir", userDir, "--target", "http://127.0.0.1:18811", "--port", "18800"
+        ], { stdio: "pipe" });
+
+        var settingsPath = path.join(userDir, "settings.js");
+        var content = fs.readFileSync(settingsPath, "utf8");
+
+        // issue #59: the events receiver must be started at settings-load time,
+        // not left for the caller to remember to wire in by hand.
+        content.should.containEql("createRuntimeEventsReceiverForTarget");
+        content.should.containEql(".start()");
+
+        // issue #61: httpAdminMiddleware must proxy runtime-affine Admin
+        // actions to the same runner B target, reusing the SAME remoteRunner
+        // object as createRemoteDeployStorage (no second target/token config).
+        content.should.containEql("createRemoteRuntimeAdminProxy");
+        content.should.containEql("httpAdminMiddleware");
+
+        var settings = require(settingsPath);
+        settings.httpAdminMiddleware.should.be.an.Array();
+        settings.httpAdminMiddleware.length.should.equal(1);
+        settings.httpAdminMiddleware[0].should.be.a.Function();
+    });
+
     it("persists the credentialSecret across repeated runs (restart-safe)", function() {
         execFileSync(process.execPath, [
             SCRIPT, "--user-dir", userDir, "--target", "http://127.0.0.1:18811"
