@@ -53,7 +53,7 @@ upstream-owned and must stay byte-for-byte identical to `upstream/main`.
 | `package.json`, `package-lock.json` | dependency manifests | ⚠️ ADD-ONLY — append new `@tbrandenburg/*` deps only, never remove/reorder/version-bump existing upstream deps |
 | `README.md` | root project landing page | ✅ project-owned exception — intentionally diverged from upstream for fork identity (see `UPSTREAM.md`); update freely |
 | `CHANGELOG.md`, `API.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`, `CITATION.cff` | upstream project docs/metadata | ❌ DO NOT TOUCH |
-| `Makefile` | demo lifecycle targets | ⚠️ ADD-ONLY — `demo-run`/`demo-start`/`demo-status`/`demo-stop` targets only |
+| `Makefile` | demo lifecycle and Temporal package release targets | ⚠️ ADD-ONLY — `demo-run`/`demo-start`/`demo-status`/`demo-stop`/`publish`/`release` targets only |
 | `AGENTS.md`, `UPSTREAM.md` | our own docs, don't exist upstream | ✅ update freely |
 | `.agents/`, `.playwright-mcp/`, `.worktrees/` (gitignored) | local tooling/scratch | ✅ ours, never upstream-relevant |
 
@@ -228,6 +228,20 @@ so it doesn't need 3 manually-managed terminals. PID/log files live under
 | `make demo-start` | Trigger a new workflow execution against the running demo (`Inject → HTTP Request → Change → Debug`). |
 | `make demo-status` | Check whether the Temporal server and the demo worker are up. |
 | `make demo-stop` | Stop the demo worker; stops the Temporal dev server too, but only if `demo-run` started it (a reused, externally-started server is left running). |
+
+### Temporal package publishing and releases (`make`)
+
+These targets apply only to `@tbrandenburg/node-red-temporal-runtime`; they do
+not publish or version the upstream Node-RED packages.
+
+| Target | Description |
+|---|---|
+| `make publish` | Publish only the runtime package to npm with public access. Requires npm credentials with access to the `@tbrandenburg` scope. |
+| `make release BUMP=PATCH\|MINOR\|MAJOR` | Use `npm version` to bump only the runtime package, commit the bump, create a `temporal-v<version>` Git tag, and create the GitHub release in `tbrandenburg/node-red-temporal`. Requires a clean worktree. Does not publish to npm. |
+
+The release target creates the version commit and tag locally; `gh release
+create` publishes the GitHub release and tag to the fork. Never aim these
+commands at `node-red/node-red` or the read-only `upstream` remote.
 
 ## Current work
 
