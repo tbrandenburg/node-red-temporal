@@ -36,3 +36,4 @@ test/unit/@node-red/runtime/lib/nodes/.testUserHome
 .agents/
 .worktrees/
 .playwright-mcp/
+.node-red-temporal/
