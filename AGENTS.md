@@ -53,7 +53,7 @@ upstream-owned and must stay byte-for-byte identical to `upstream/main`.
 | `package.json`, `package-lock.json` | dependency manifests | ⚠️ ADD-ONLY — append new `@tbrandenburg/*` deps only, never remove/reorder/version-bump existing upstream deps |
 | `README.md` | root project landing page | ✅ project-owned exception — intentionally diverged from upstream for fork identity (see `UPSTREAM.md`); update freely |
 | `CHANGELOG.md`, `API.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`, `CITATION.cff` | upstream project docs/metadata | ❌ DO NOT TOUCH |
-| `Makefile` | demo lifecycle and Temporal package release targets | ⚠️ ADD-ONLY — `demo-run`/`demo-start`/`demo-status`/`demo-stop`/`publish`/`release` targets only |
+| `Makefile` | local run lifecycle and Temporal package release targets | ⚠️ ADD-ONLY — `run`/`start`/`status`/`stop`/`publish`/`release` targets only |
 | `AGENTS.md`, `UPSTREAM.md` | our own docs, don't exist upstream | ✅ update freely |
 | `.agents/`, `.playwright-mcp/`, `.worktrees/` (gitignored) | local tooling/scratch | ✅ ours, never upstream-relevant |
 
@@ -223,19 +223,29 @@ npm run mocha:core    # runtime/unit tests only, faster
 npm start             # stock Node-RED
 ```
 
-### Temporal demo (`make`)
+### Local run lifecycle (`make`)
 
-Convenience targets wrapping the Temporal-backed demo's dev-server + worker
-lifecycle (`packages/node_modules/@tbrandenburg/node-red-temporal-runtime`),
-so it doesn't need 3 manually-managed terminals. PID/log files live under
-`/tmp/node-red-temporal-demo/`, not in the repo.
+Convenience targets wrapping the project's primary UX (issue #39): an
+ordinary Node-RED editor (A) whose Deploy button ships flows to a separate
+Temporal-backed runner (B)
+(`packages/node_modules/@tbrandenburg/node-red-temporal-runtime`), so it
+doesn't need 3 manually-managed terminals. PID/log files live under
+`/tmp/node-red-temporal-run/`; editor A's persistent `userDir` lives under
+the gitignored `.node-red-temporal/editor-userdir/`, not `/tmp` — it is the
+source of truth for "the current flow" across restarts, like a normal
+Node-RED install.
 
 | Target | Description |
 |---|---|
-| `make demo-run` | Start (or reuse) a Temporal dev server, then start the demo worker — both detached. Prints the Web UI URL and worker log path. |
-| `make demo-start` | Trigger a new workflow execution against the running demo (`Inject → HTTP Request → Change → Debug`). |
-| `make demo-status` | Check whether the Temporal server and the demo worker are up. |
-| `make demo-stop` | Stop the demo worker; stops the Temporal dev server too, but only if `demo-run` started it (a reused, externally-started server is left running). |
+| `make run` | Start (or reuse) a Temporal dev server, runner B (`--admin-port`, editor disabled), and editor A — all detached. Defaults to an empty flow; pass `FLOW=path/to/flows.json` to seed runner B's initial flow instead. Prints the editor URL and Web UI URL. |
+| `make status` | Report Temporal, runner B (admin API reachable), and editor A (editor port reachable) — three independent checks. |
+| `make stop` | Stop editor A and runner B; stops the Temporal dev server too, but only if `run` started it (a reused, externally-started server is left running). |
+
+`make demo-run`/`demo-start`/`demo-status`/`demo-stop` (issue #43's
+predecessors, which booted one combined worker against a static
+`demo/flows.json`) no longer exist as the primary path; they print a
+deprecation message pointing here. `demo/flows.json` and its sibling
+fixtures are untouched and remain valid for manual/E2E testing via `FLOW=`.
 
 ### Temporal package publishing and releases (`make`)
 

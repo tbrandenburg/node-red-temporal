@@ -44,7 +44,7 @@ The design rule is simple:
 
 - Node.js **>= 22.9**
 - the [Temporal CLI](https://docs.temporal.io/cli) available on your `PATH`
-- `make` for the convenience demo commands below
+- `make` for the convenience lifecycle commands below
 
 Clone and install:
 
@@ -54,31 +54,33 @@ cd node-red-temporal
 npm install
 ```
 
-Start the Temporal dev server and the demo worker:
+Start the Temporal dev server, a Temporal-backed runner, and an ordinary
+Node-RED editor:
 
 ```bash
-make demo-run
+make run
 ```
 
-The demo contains a scheduled Inject source, so Workflow Executions start automatically.
-
-Open the Temporal Web UI:
+This boots with **no pre-baked flow** - build/edit a flow in the editor at
+`http://localhost:1880` and press **Deploy**; it ships to the runner and
+executes durably on Temporal. Open the Temporal Web UI to watch it:
 
 ```text
 http://localhost:8233
 ```
 
-Or trigger one immediately:
+To seed the runner's initial flow instead of starting empty, pass `FLOW=`
+(e.g. one of the package's `demo/flows*.json` fixtures):
 
 ```bash
-make demo-start
+make run FLOW=packages/node_modules/@tbrandenburg/node-red-temporal-runtime/demo/flows.json
 ```
 
-Check or stop the demo:
+Check or stop the lifecycle:
 
 ```bash
-make demo-status
-make demo-stop
+make status
+make stop
 ```
 
 For the full CLI, split-worker deployment, MQTT gate, recovery demo, and serialization behavior, see the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md).
