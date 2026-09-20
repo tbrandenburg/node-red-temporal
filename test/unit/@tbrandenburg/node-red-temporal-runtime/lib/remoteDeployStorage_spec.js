@@ -1,6 +1,7 @@
 var should = require("should");
 var sinon = require("sinon");
-var { createRemoteDeployStorage } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/remoteDeployStorage.js");
+var EventEmitter = require("events");
+var { createRemoteDeployStorage, createRuntimeEventsReceiverForTarget } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/remoteDeployStorage.js");
 
 function makeDelegate(overrides) {
     return Object.assign({
@@ -152,6 +153,35 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteDeployStorage", func
 
             delegate.getCredentials.callCount.should.equal(2);
             delegate.saveCredentials.called.should.be.false();
+        });
+    });
+
+    describe("createRuntimeEventsReceiverForTarget() (issue #59)", function() {
+        it("reuses the same target/token to build a runtime-events receiver, without affecting saveFlows/init behavior", function() {
+            var events = new EventEmitter();
+            var fetchStub = sinon.stub().returns(new Promise(function() {}));
+            var receiver = createRuntimeEventsReceiverForTarget({
+                target: "http://localhost:1881",
+                token: "s3cr3t",
+                events: events,
+                fetch: fetchStub,
+                log: { warn() {} }
+            });
+
+            receiver.start();
+            fetchStub.calledOnce.should.be.true();
+            var headers = fetchStub.firstCall.args[1].headers;
+            headers.Authorization.should.equal("Bearer s3cr3t");
+            receiver.stop();
+        });
+
+        it("does not require options.events (defaults to @node-red/util's events singleton)", function() {
+            var receiver = createRuntimeEventsReceiverForTarget({
+                target: "http://localhost:1881",
+                fetch: sinon.stub().returns(new Promise(function() {}))
+            });
+            receiver.should.have.properties(["start", "stop"]);
+            receiver.stop();
         });
     });
 });

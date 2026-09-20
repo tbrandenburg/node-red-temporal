@@ -1,0 +1,10 @@
+{
+    "name": "node-red-temporal-test-runtime-admin-nodes",
+    "version": "0.0.1",
+    "description": "Test-only Node-RED node package (issue #60): registers a fixture route on RED.httpAdmin to prove runtime.httpAdmin is generically mounted onto the runner's Admin API app.",
+    "node-red": {
+        "nodes": {
+            "test-nodes": "index.js"
+        }
+    }
+}
