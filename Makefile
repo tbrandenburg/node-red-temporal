@@ -8,6 +8,7 @@
 RUNTIME_DIR := packages/node_modules/@tbrandenburg/node-red-temporal-runtime
 CLI         := $(RUNTIME_DIR)/bin/node-red-temporal
 DEMO_FLOW   := $(RUNTIME_DIR)/demo/flows.json
+RELEASE_TAG_PREFIX := temporal-v
 
 PID_DIR        := /tmp/node-red-temporal-demo
 TEMPORAL_PID   := $(PID_DIR)/temporal.pid
@@ -16,7 +17,29 @@ TEMPORAL_DB    := $(PID_DIR)/temporal.db
 WORKER_PID     := $(PID_DIR)/worker.pid
 WORKER_LOG     := $(PID_DIR)/worker.log
 
-.PHONY: demo-run demo-start demo-status demo-stop
+.PHONY: publish release demo-run demo-start demo-status demo-stop
+
+## publish: publish only the Temporal runtime package to npm
+publish:
+	@npm publish --access public $(RUNTIME_DIR)
+
+## release: bump the Temporal runtime version and create its GitHub release
+## Usage: make release BUMP=PATCH|MINOR|MAJOR
+release:
+	@set -eu; \
+	case "$(BUMP)" in \
+		MAJOR|MINOR|PATCH) ;; \
+		*) echo "Usage: make release BUMP=MAJOR|MINOR|PATCH" >&2; exit 2 ;; \
+	esac; \
+	if [ -n "$$(git status --porcelain)" ]; then \
+		echo "release requires a clean worktree" >&2; exit 1; \
+	fi; \
+	version=$$(cd "$(RUNTIME_DIR)" && npm version "$$(printf '%s' "$(BUMP)" | tr '[:upper:]' '[:lower:]')" --no-git-tag-version); \
+	tag="$(RELEASE_TAG_PREFIX)$${version#v}"; \
+	git add "$(RUNTIME_DIR)/package.json"; \
+	git commit -m "release: Temporal runtime $${version#v}"; \
+	git tag -a "$$tag" -m "Temporal runtime $${version#v}"; \
+	gh release create "$$tag" --repo tbrandenburg/node-red-temporal --title "Temporal runtime $${version#v}" --generate-notes
 
 ## demo-run: start (or reuse) a Temporal dev server + the demo worker, both detached
 demo-run:
