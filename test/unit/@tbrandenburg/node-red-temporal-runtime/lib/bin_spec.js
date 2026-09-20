@@ -222,3 +222,79 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #47 --node-timeout-ms", function() {
+    var ENV_VAR = "NODE_RED_TEMPORAL_NODE_TIMEOUT_MS";
+    var originalEnv;
+
+    beforeEach(function() {
+        originalEnv = process.env[ENV_VAR];
+        delete process.env[ENV_VAR];
+    });
+
+    afterEach(function() {
+        if (originalEnv === undefined) {
+            delete process.env[ENV_VAR];
+        } else {
+            process.env[ENV_VAR] = originalEnv;
+        }
+    });
+
+    it("nodeTimeoutMsFrom returns undefined when neither --node-timeout-ms nor the env var is given (caller applies its own default)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        should(bin.nodeTimeoutMsFrom({})).be.undefined();
+    });
+
+    it("nodeTimeoutMsFrom parses --node-timeout-ms as an integer", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.nodeTimeoutMsFrom({ "node-timeout-ms": "12345" }).should.equal(12345);
+    });
+
+    it("nodeTimeoutMsFrom falls back to the NODE_RED_TEMPORAL_NODE_TIMEOUT_MS env var when the flag is not given", function() {
+        process.env[ENV_VAR] = "54321";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.nodeTimeoutMsFrom({}).should.equal(54321);
+    });
+
+    it("nodeTimeoutMsFrom prefers the explicit flag over the env var", function() {
+        process.env[ENV_VAR] = "54321";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.nodeTimeoutMsFrom({ "node-timeout-ms": "111" }).should.equal(111);
+    });
+
+    it("nodeTimeoutMsFrom rejects a non-positive-integer value with a clear error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        (function() {
+            bin.nodeTimeoutMsFrom({ "node-timeout-ms": "not-a-number" });
+        }).should.throw(/--node-timeout-ms must be a positive integer/);
+    });
+
+    it("--help lists --node-timeout-ms", function() {
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--node-timeout-ms/);
+    });
+
+    it("worker --role activity threads --node-timeout-ms into createActivityWorker's options", function() {
+        var workerModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
+        var stub = sinon.stub(workerModule, "createActivityWorker").resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json", "node-timeout-ms": "9999" }).then(function() {
+            stub.firstCall.args[1].nodeExecutionTimeoutMs.should.equal(9999);
+        }).finally(function() {
+            stub.restore();
+            delete require.cache[BIN];
+        });
+    });
+});

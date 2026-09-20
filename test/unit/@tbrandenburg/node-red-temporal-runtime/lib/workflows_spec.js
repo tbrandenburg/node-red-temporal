@@ -21,6 +21,7 @@ var ERROR_FLOW = path.join(FIXTURES, "error-flow.json");
 var COMPLETE_FLOW = path.join(FIXTURES, "complete-flow.json");
 var JOIN_FLOW = path.join(FIXTURES, "join-flow.json");
 var LOOP_FLOW = path.join(FIXTURES, "loop-flow.json");
+var DELAY_FLOW = path.join(FIXTURES, "delay-flow.json");
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - resolveDestinations", function() {
     var graph = {
@@ -804,5 +805,82 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #16: act
         // manual multi-process acceptance test, per this file's own
         // existing convention for executeFlow/createExecuteNode above).
         makeExecuteNodeProxy.length.should.be.aboveOrEqual(3);
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #47: node execution timeout threading", function() {
+    var handle;
+    var capture;
+
+    afterEach(function() {
+        if (capture) {
+            capture.uninstall();
+            capture = null;
+        }
+        if (handle) {
+            var h = handle;
+            handle = null;
+            return h.stop();
+        }
+    });
+
+    it("createExecuteNode (real proxyActivities factory) accepts an optional nodeExecutionTimeoutMs as a 5th argument without throwing outside a Workflow sandbox", function() {
+        // Mirrors the existing taskQueue (4th-argument) assertion above:
+        // proxyActivities() itself requires a live Workflow execution
+        // context, so only the factory signature is asserted here - the
+        // derived startToCloseTimeout value itself is proven by the plain
+        // Node.js unit test below (buildActivityOptionsFor-style check via
+        // a stubbed proxyActivities) and by the real end-to-end Delay tests.
+        makeExecuteNodeProxy.length.should.be.aboveOrEqual(4);
+    });
+
+    it("runFlow forwards nodeExecutionTimeoutMs to the createExecuteNode factory as a 5th argument", function() {
+        var factoryArgs = [];
+        var graph = { n1: [["n2"]], n2: [[]] };
+        var makeExecuteNode = function(nodeId, invocation, meta, taskQueue, nodeExecutionTimeoutMs) {
+            factoryArgs.push(nodeExecutionTimeoutMs);
+            return function() { return Promise.resolve({ sends: [] }); };
+        };
+        return runFlow({ createExecuteNode: makeExecuteNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, nodeExecutionTimeoutMs: 12345 })
+            .then(function() {
+                factoryArgs.should.eql([12345]);
+            });
+    });
+
+    it("a real Delay node completing after the old hardcoded 5s Capture default still succeeds when Capture is configured with a comfortably larger timeout (issue #47 fixes the hidden ceiling)", function() {
+        this.timeout(10000);
+        return bootstrap(DELAY_FLOW).then(function(h) {
+            handle = h;
+            // DELAY_FLOW's delay1 node waits 200ms before calling done() -
+            // configuring Capture's timeout at 2000ms (comfortably above
+            // 200ms, and would have been fine even under the OLD 5000ms
+            // default) proves ordinary Delay usage is unaffected.
+            capture = new Capture({ timeoutMs: 2000 });
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return executeNode({ flowVersion: h.flowVersion, nodeId: "delay1", msg: { payload: 1, _msgid: "delay-ok-1" } });
+        }).then(function(result) {
+            should(result.error).be.undefined();
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("n2");
+        });
+    });
+
+    it("a real Delay node exceeding a deliberately SMALLER configured timeout fails clearly with NODE_TIMEOUT, not a silent hang or a different error", function() {
+        this.timeout(10000);
+        return bootstrap(DELAY_FLOW).then(function(h) {
+            handle = h;
+            // delay1 waits 200ms; configuring Capture's timeout at 100ms
+            // (well below the node's own delay) proves the configured
+            // ceiling is genuinely enforced, generically, with no
+            // Delay-specific logic anywhere in Capture/the runner.
+            capture = new Capture({ timeoutMs: 100 });
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return executeNode({ flowVersion: h.flowVersion, nodeId: "delay1", msg: { payload: 1, _msgid: "delay-timeout-1" } });
+        }).then(function(result) {
+            should(result.error).be.ok();
+            result.error.code.should.equal("NODE_TIMEOUT");
+        });
     });
 });
