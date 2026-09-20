@@ -144,6 +144,19 @@ The current alpha supports, among other things:
 
 See [COMPATIBILITY.md](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/COMPATIBILITY.md) for the exact evidence behind these statements.
 
+### HTTP compatibility
+
+- ✅ **Outbound `http request` nodes** are supported as ordinary Node-RED
+  Activities, subject to the documented at-least-once side-effect semantics.
+- ❌ **Inbound `http in → ... → http response` flows** are currently
+  unsupported. Those nodes depend on live `req`/`res` connection objects
+  that cannot cross Temporal's durable message boundary or survive a worker
+  restart.
+
+The early alpha targets message-driven flows with serializable messages.
+Durable HTTP ingress may be designed separately later rather than pretending
+an open HTTP connection is durable.
+
 ## Compatibility evidence
 
 The published early-alpha smoke matrix deliberately stays small rather than pretending to cover the entire Node-RED ecosystem.
@@ -221,7 +234,7 @@ This is an early alpha. Important boundaries are explicit:
 - **In-flight flow migration is not implemented.** Redeploying to a new `flowVersion` causes Workflows pinned to the old version to fail explicitly with `FLOW_VERSION_MISMATCH`.
 - **Context durability is a Node-RED storage concern.** The default in-memory context is still lost on restart; configure a persistent Node-RED context store when required.
 - **Not every JavaScript object is a durable message.** Circular objects, functions and live sockets/streams cannot safely cross the Temporal serialization boundary. Buffer/Date/Error behavior is documented in the runtime package README.
-- **HTTP In / HTTP Response bridging is not implemented.** Live `req`/`res` objects are outside the current durable message boundary.
+- **Inbound `HTTP In → HTTP Response` bridging is not implemented.** Those live `req`/`res` objects are outside the current durable message boundary; outbound `http request` is unaffected and supported (see [HTTP compatibility](#http-compatibility)).
 - **Hooks are process-global.** Run one Capture instance per Node-RED Activity-worker process.
 - **Performance is not yet characterized.** No production throughput, batching or autoscaling guidance is claimed.
 
