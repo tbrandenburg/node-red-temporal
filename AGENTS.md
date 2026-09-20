@@ -51,13 +51,14 @@ upstream-owned and must stay byte-for-byte identical to `upstream/main`.
 | `scripts/` | upstream release/build tooling | ❌ DO NOT TOUCH |
 | `eslint.config.js`, `.mocharc.json`, `.nycrc.json`, `nodemon.json`, `jsdoc.json` | upstream lint/test/build config | ❌ DO NOT TOUCH |
 | `package.json`, `package-lock.json` | dependency manifests | ⚠️ ADD-ONLY — append new `@tbrandenburg/*` deps only, never remove/reorder/version-bump existing upstream deps |
-| `README.md`, `CHANGELOG.md`, `API.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`, `CITATION.cff` | upstream project docs/metadata | ❌ DO NOT TOUCH |
+| `README.md` | root project landing page | ✅ project-owned exception — intentionally diverged from upstream for fork identity (see `UPSTREAM.md`); update freely |
+| `CHANGELOG.md`, `API.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`, `CITATION.cff` | upstream project docs/metadata | ❌ DO NOT TOUCH |
 | `Makefile` | demo lifecycle targets | ⚠️ ADD-ONLY — `demo-run`/`demo-start`/`demo-status`/`demo-stop` targets only |
 | `AGENTS.md`, `UPSTREAM.md` | our own docs, don't exist upstream | ✅ update freely |
 | `.agents/`, `.playwright-mcp/`, `.worktrees/` (gitignored) | local tooling/scratch | ✅ ours, never upstream-relevant |
 
-**Rule of thumb:** if a path doesn't start with `@tbrandenburg/`, isn't `AGENTS.md`/`UPSTREAM.md`, and
-isn't a Makefile-only addition, don't edit it. Before every commit:
+**Rule of thumb:** if a path doesn't start with `@tbrandenburg/`, isn't `AGENTS.md`/`UPSTREAM.md`/root
+`README.md`, and isn't a Makefile-only addition, don't edit it. Before every commit:
 
 ```bash
 git diff --stat upstream/main -- packages/node_modules/@node-red/ packages/node_modules/node-red/ \

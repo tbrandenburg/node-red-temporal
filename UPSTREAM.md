@@ -54,3 +54,18 @@ security patch, or (should it ever happen) copied/adapted upstream file. See
 | Date | Event | Upstream tag/commit | Zero-diff check | `npm test` |
 |---|---|---|---|---|
 | 2026-09-18 | Fork point | `5.0.7` (`1e85f1efb`) | empty | baseline: 2864 passing / 60 pending / 0 failing |
+| 2026-09-20 | Intentional root `README.md` divergence (issue #41) | n/a — documentation-only change | empty for `packages/node_modules/@node-red/` and `packages/node_modules/node-red/` | unaffected |
+
+Root `README.md` was rewritten from the inherited upstream Node-RED landing
+page (hero logo, upstream badges, upstream community links) into a
+project-specific landing page identifying this repository as
+`node-red-temporal`, an independent experimental fork exploring
+Temporal-backed durable execution — see issue #41. No file under
+`packages/node_modules/@node-red/` or `packages/node_modules/node-red/` was
+touched. Upstream Node-RED attribution and official links (nodered.org,
+node-red/node-red) are retained in the new README. `AGENTS.md`'s
+do-not-touch table now lists root `README.md` as a project-owned exception;
+`CHANGELOG.md`, `API.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
+`SECURITY.md`, `LICENSE`, and `CITATION.cff` remain upstream-owned and
+unchanged. Future upstream syncs must not silently overwrite this file with
+upstream's `README.md`.
