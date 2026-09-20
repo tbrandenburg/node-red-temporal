@@ -222,3 +222,205 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #46 --user-dir/--settings", function() {
+    var fs = require("fs");
+    var os = require("os");
+    var origUserDirEnv;
+    var origSettingsEnv;
+
+    beforeEach(function() {
+        origUserDirEnv = process.env.NODE_RED_TEMPORAL_USER_DIR;
+        origSettingsEnv = process.env.NODE_RED_TEMPORAL_SETTINGS;
+        delete process.env.NODE_RED_TEMPORAL_USER_DIR;
+        delete process.env.NODE_RED_TEMPORAL_SETTINGS;
+    });
+
+    afterEach(function() {
+        if (origUserDirEnv === undefined) {
+            delete process.env.NODE_RED_TEMPORAL_USER_DIR;
+        } else {
+            process.env.NODE_RED_TEMPORAL_USER_DIR = origUserDirEnv;
+        }
+        if (origSettingsEnv === undefined) {
+            delete process.env.NODE_RED_TEMPORAL_SETTINGS;
+        } else {
+            process.env.NODE_RED_TEMPORAL_SETTINGS = origSettingsEnv;
+        }
+    });
+
+    it("--help documents --user-dir and --settings", function() {
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--user-dir/);
+        out.should.match(/--settings/);
+    });
+
+    it("parseArgs() parses --user-dir and --settings", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        var values = bin.parseArgs(["--user-dir", "/tmp/foo", "--settings", "/tmp/settings.js"]);
+        values["user-dir"].should.equal("/tmp/foo");
+        values.settings.should.equal("/tmp/settings.js");
+    });
+
+    it("worker --role activity threads --user-dir/--settings into createActivityWorker's bootstrapOptions", function() {
+        var settingsPath = path.join(os.tmpdir(), "nrt-46-settings-" + Date.now() + ".js");
+        fs.writeFileSync(settingsPath, "module.exports = { functionGlobalContext: { marker: 42 } };");
+        var userDir = path.join(os.tmpdir(), "nrt-46-userdir-" + Date.now());
+
+        var workerModulePath = require.resolve(path.join(__dirname, "..", "..", "..", "..", "..", "packages", "node_modules", "@tbrandenburg", "node-red-temporal-runtime", "lib", "worker"));
+        var original = require.cache[workerModulePath];
+        var createActivityWorkerStub = sinon.stub().resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+
+        require.cache[workerModulePath] = {
+            id: workerModulePath,
+            filename: workerModulePath,
+            loaded: true,
+            exports: {
+                createActivityWorker: createActivityWorkerStub,
+                createWorkflowWorker: sinon.stub(),
+                createCombinedWorker: sinon.stub(),
+                resolveTemporalConfig: sinon.stub()
+            }
+        };
+
+        delete require.cache[BIN];
+        var bin = require(BIN);
+
+        return bin.runWorker({ role: "activity", flow: FLOW, "user-dir": userDir, settings: settingsPath }).then(function() {
+            createActivityWorkerStub.calledOnce.should.equal(true);
+            var options = createActivityWorkerStub.firstCall.args[1];
+            options.bootstrapOptions.userDir.should.equal(path.resolve(userDir));
+            options.bootstrapOptions.settings.should.have.property("functionGlobalContext");
+            options.bootstrapOptions.settings.functionGlobalContext.should.have.property("marker", 42);
+        }).finally(function() {
+            if (original) {
+                require.cache[workerModulePath] = original;
+            } else {
+                delete require.cache[workerModulePath];
+            }
+            fs.unlinkSync(settingsPath);
+        });
+    });
+
+    it("omitting --user-dir/--settings does not add them to bootstrapOptions", function() {
+        var workerModulePath = require.resolve(path.join(__dirname, "..", "..", "..", "..", "..", "packages", "node_modules", "@tbrandenburg", "node-red-temporal-runtime", "lib", "worker"));
+        var original = require.cache[workerModulePath];
+        var createActivityWorkerStub = sinon.stub().resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+
+        require.cache[workerModulePath] = {
+            id: workerModulePath,
+            filename: workerModulePath,
+            loaded: true,
+            exports: {
+                createActivityWorker: createActivityWorkerStub,
+                createWorkflowWorker: sinon.stub(),
+                createCombinedWorker: sinon.stub(),
+                resolveTemporalConfig: sinon.stub()
+            }
+        };
+
+        delete require.cache[BIN];
+        var bin = require(BIN);
+
+        return bin.runWorker({ role: "activity", flow: FLOW }).then(function() {
+            createActivityWorkerStub.calledOnce.should.equal(true);
+            var options = createActivityWorkerStub.firstCall.args[1];
+            should.not.exist(options.bootstrapOptions);
+        }).finally(function() {
+            if (original) {
+                require.cache[workerModulePath] = original;
+            } else {
+                delete require.cache[workerModulePath];
+            }
+        });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #47 --node-timeout-ms", function() {
+    var ENV_VAR = "NODE_RED_TEMPORAL_NODE_TIMEOUT_MS";
+    var originalEnv;
+
+    beforeEach(function() {
+        originalEnv = process.env[ENV_VAR];
+        delete process.env[ENV_VAR];
+    });
+
+    afterEach(function() {
+        if (originalEnv === undefined) {
+            delete process.env[ENV_VAR];
+        } else {
+            process.env[ENV_VAR] = originalEnv;
+        }
+    });
+
+    it("nodeTimeoutMsFrom returns undefined when neither --node-timeout-ms nor the env var is given (caller applies its own default)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        should(bin.nodeTimeoutMsFrom({})).be.undefined();
+    });
+
+    it("nodeTimeoutMsFrom parses --node-timeout-ms as an integer", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.nodeTimeoutMsFrom({ "node-timeout-ms": "12345" }).should.equal(12345);
+    });
+
+    it("nodeTimeoutMsFrom falls back to the NODE_RED_TEMPORAL_NODE_TIMEOUT_MS env var when the flag is not given", function() {
+        process.env[ENV_VAR] = "54321";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.nodeTimeoutMsFrom({}).should.equal(54321);
+    });
+
+    it("nodeTimeoutMsFrom prefers the explicit flag over the env var", function() {
+        process.env[ENV_VAR] = "54321";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.nodeTimeoutMsFrom({ "node-timeout-ms": "111" }).should.equal(111);
+    });
+
+    it("nodeTimeoutMsFrom rejects a non-positive-integer value with a clear error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        (function() {
+            bin.nodeTimeoutMsFrom({ "node-timeout-ms": "not-a-number" });
+        }).should.throw(/--node-timeout-ms must be a positive integer/);
+    });
+
+    it("--help lists --node-timeout-ms", function() {
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--node-timeout-ms/);
+    });
+
+    it("worker --role activity threads --node-timeout-ms into createActivityWorker's options", function() {
+        var workerModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
+        var stub = sinon.stub(workerModule, "createActivityWorker").resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json", "node-timeout-ms": "9999" }).then(function() {
+            stub.firstCall.args[1].nodeExecutionTimeoutMs.should.equal(9999);
+        }).finally(function() {
+            stub.restore();
+            delete require.cache[BIN];
+        });
+    });
+});

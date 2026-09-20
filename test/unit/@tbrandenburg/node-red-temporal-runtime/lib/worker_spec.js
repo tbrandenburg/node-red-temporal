@@ -220,6 +220,17 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - createOnIngress (
                 errorSpy.restore();
             });
     });
+
+    it("issue #47: records the given nodeExecutionTimeoutMs in the started Workflow's input", function() {
+        var startStub = sinon.stub().resolves({ workflowId: "wf-1" });
+        var client = { workflow: { start: startStub } };
+        var onIngress = worker.createOnIngress(function() { return Promise.resolve(client); }, flowInfo, undefined, 12345);
+
+        return onIngress({ sourceNodeId: "n1", msg: {}, sends: [{ port: 0, destinationId: "n2", msg: {} }] })
+            .then(function() {
+                startStub.firstCall.args[1].args[0].nodeExecutionTimeoutMs.should.equal(12345);
+            });
+    });
 });
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - createWorker wires onIngress into Capture (M3)", function() {
@@ -608,6 +619,44 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #16 role de
             throw new Error("expected createActivityWorker() to reject without a flow file");
         }, function(err) {
             err.should.be.an.Error();
+        });
+    });
+
+    it("issue #47: defaults Capture's timeoutMs to DEFAULT_NODE_EXECUTION_TIMEOUT_MS when nodeExecutionTimeoutMs is not given", function() {
+        return worker.createActivityWorker(FLOW).then(function(result) {
+            result.capture.timeoutMs.should.equal(worker.DEFAULT_NODE_EXECUTION_TIMEOUT_MS);
+            return result.stop();
+        });
+    });
+
+    it("issue #47: threads an explicit options.nodeExecutionTimeoutMs into Capture's timeoutMs", function() {
+        return worker.createActivityWorker(FLOW, { nodeExecutionTimeoutMs: 9999 }).then(function(result) {
+            result.capture.timeoutMs.should.equal(9999);
+            return result.stop();
+        });
+    });
+
+    it("issue #47: an explicit captureOptions.timeoutMs still wins over options.nodeExecutionTimeoutMs (existing Capture knob is not redesigned/hidden)", function() {
+        return worker.createActivityWorker(FLOW, { nodeExecutionTimeoutMs: 9999, captureOptions: { timeoutMs: 42 } }).then(function(result) {
+            result.capture.timeoutMs.should.equal(42);
+            return result.stop();
+        });
+    });
+
+    it("issue #47: source-ingress-started Workflows carry the configured nodeExecutionTimeoutMs in their input", function() {
+        var startStub = sinon.stub().resolves({ workflowId: "wf-1" });
+        var restore = stubClientModule(startStub);
+        return worker.createActivityWorker(FLOW, { nodeExecutionTimeoutMs: 7777 }).then(function(result) {
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: {} }]
+            }).then(function() {
+                startStub.firstCall.args[1].args[0].nodeExecutionTimeoutMs.should.equal(7777);
+                return result.stop();
+            });
+        }).finally(function() {
+            restore();
         });
     });
 
