@@ -26,6 +26,11 @@ RELEASE_TAG_PREFIX := temporal-v
 # restarts, exactly like a normal Node-RED install - kept in-repo (gitignored)
 # rather than /tmp so it survives reboots the way ~/.node-red normally would.
 EDITOR_USERDIR := .node-red-temporal/editor-userdir
+# Runner B's userDir (issue #46): same rationale as EDITOR_USERDIR - a stable,
+# gitignored install so installed node-red-contrib-* modules, credentials,
+# and persisted context survive `make stop`/`make run` cycles instead of
+# living in an ephemeral temp dir.
+RUNNER_USERDIR := .node-red-temporal/runner-userdir
 EDITOR_PORT    := 1880
 ADMIN_PORT     := 1881
 ADMIN_HOST     := 127.0.0.1
@@ -69,7 +74,7 @@ release:
 ##   FLOW= seeds runner B's INITIAL flow on first boot only; omit it to boot
 ##   B with an empty flow and create everything from editor A's Deploy button.
 run:
-	@mkdir -p $(PID_DIR) $(EDITOR_USERDIR)
+	@mkdir -p $(PID_DIR) $(EDITOR_USERDIR) $(RUNNER_USERDIR)
 	@if ss -tln 2>/dev/null | grep -q ':7233 '; then \
 		echo "Temporal already listening on :7233 - reusing it"; \
 	else \
@@ -90,6 +95,7 @@ run:
 		echo "Starting runner B (admin API on $(ADMIN_HOST):$(ADMIN_PORT)) seeded from $$seed_flow..."; \
 		setsid node $(CLI) worker --role activity --flow "$$seed_flow" \
 			--admin-port $(ADMIN_PORT) --admin-host $(ADMIN_HOST) \
+			--user-dir $(RUNNER_USERDIR) \
 			> $(RUNNER_LOG) 2>&1 < /dev/null & echo $$! > $(RUNNER_PID); \
 		sleep 2; \
 	fi

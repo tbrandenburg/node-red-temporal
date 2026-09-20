@@ -222,3 +222,129 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #46 --user-dir/--settings", function() {
+    var fs = require("fs");
+    var os = require("os");
+    var origUserDirEnv;
+    var origSettingsEnv;
+
+    beforeEach(function() {
+        origUserDirEnv = process.env.NODE_RED_TEMPORAL_USER_DIR;
+        origSettingsEnv = process.env.NODE_RED_TEMPORAL_SETTINGS;
+        delete process.env.NODE_RED_TEMPORAL_USER_DIR;
+        delete process.env.NODE_RED_TEMPORAL_SETTINGS;
+    });
+
+    afterEach(function() {
+        if (origUserDirEnv === undefined) {
+            delete process.env.NODE_RED_TEMPORAL_USER_DIR;
+        } else {
+            process.env.NODE_RED_TEMPORAL_USER_DIR = origUserDirEnv;
+        }
+        if (origSettingsEnv === undefined) {
+            delete process.env.NODE_RED_TEMPORAL_SETTINGS;
+        } else {
+            process.env.NODE_RED_TEMPORAL_SETTINGS = origSettingsEnv;
+        }
+    });
+
+    it("--help documents --user-dir and --settings", function() {
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--user-dir/);
+        out.should.match(/--settings/);
+    });
+
+    it("parseArgs() parses --user-dir and --settings", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        var values = bin.parseArgs(["--user-dir", "/tmp/foo", "--settings", "/tmp/settings.js"]);
+        values["user-dir"].should.equal("/tmp/foo");
+        values.settings.should.equal("/tmp/settings.js");
+    });
+
+    it("worker --role activity threads --user-dir/--settings into createActivityWorker's bootstrapOptions", function() {
+        var settingsPath = path.join(os.tmpdir(), "nrt-46-settings-" + Date.now() + ".js");
+        fs.writeFileSync(settingsPath, "module.exports = { functionGlobalContext: { marker: 42 } };");
+        var userDir = path.join(os.tmpdir(), "nrt-46-userdir-" + Date.now());
+
+        var workerModulePath = require.resolve(path.join(__dirname, "..", "..", "..", "..", "..", "packages", "node_modules", "@tbrandenburg", "node-red-temporal-runtime", "lib", "worker"));
+        var original = require.cache[workerModulePath];
+        var createActivityWorkerStub = sinon.stub().resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+
+        require.cache[workerModulePath] = {
+            id: workerModulePath,
+            filename: workerModulePath,
+            loaded: true,
+            exports: {
+                createActivityWorker: createActivityWorkerStub,
+                createWorkflowWorker: sinon.stub(),
+                createCombinedWorker: sinon.stub(),
+                resolveTemporalConfig: sinon.stub()
+            }
+        };
+
+        delete require.cache[BIN];
+        var bin = require(BIN);
+
+        return bin.runWorker({ role: "activity", flow: FLOW, "user-dir": userDir, settings: settingsPath }).then(function() {
+            createActivityWorkerStub.calledOnce.should.equal(true);
+            var options = createActivityWorkerStub.firstCall.args[1];
+            options.bootstrapOptions.userDir.should.equal(path.resolve(userDir));
+            options.bootstrapOptions.settings.should.have.property("functionGlobalContext");
+            options.bootstrapOptions.settings.functionGlobalContext.should.have.property("marker", 42);
+        }).finally(function() {
+            if (original) {
+                require.cache[workerModulePath] = original;
+            } else {
+                delete require.cache[workerModulePath];
+            }
+            fs.unlinkSync(settingsPath);
+        });
+    });
+
+    it("omitting --user-dir/--settings does not add them to bootstrapOptions", function() {
+        var workerModulePath = require.resolve(path.join(__dirname, "..", "..", "..", "..", "..", "packages", "node_modules", "@tbrandenburg", "node-red-temporal-runtime", "lib", "worker"));
+        var original = require.cache[workerModulePath];
+        var createActivityWorkerStub = sinon.stub().resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+
+        require.cache[workerModulePath] = {
+            id: workerModulePath,
+            filename: workerModulePath,
+            loaded: true,
+            exports: {
+                createActivityWorker: createActivityWorkerStub,
+                createWorkflowWorker: sinon.stub(),
+                createCombinedWorker: sinon.stub(),
+                resolveTemporalConfig: sinon.stub()
+            }
+        };
+
+        delete require.cache[BIN];
+        var bin = require(BIN);
+
+        return bin.runWorker({ role: "activity", flow: FLOW }).then(function() {
+            createActivityWorkerStub.calledOnce.should.equal(true);
+            var options = createActivityWorkerStub.firstCall.args[1];
+            should.not.exist(options.bootstrapOptions);
+        }).finally(function() {
+            if (original) {
+                require.cache[workerModulePath] = original;
+            } else {
+                delete require.cache[workerModulePath];
+            }
+        });
+    });
+});
