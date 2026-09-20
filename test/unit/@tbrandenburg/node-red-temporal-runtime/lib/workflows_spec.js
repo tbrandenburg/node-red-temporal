@@ -16,6 +16,8 @@ var LINK_FLOW = path.join(FIXTURES, "link-flow.json");
 var SUBFLOW_FLOW = path.join(FIXTURES, "subflow-flow.json");
 var NESTED_SUBFLOW_FLOW = path.join(FIXTURES, "nested-subflow-flow.json");
 var CATCH_FLOW = path.join(FIXTURES, "catch-flow.json");
+var CATCH_PRESEND_FLOW = path.join(FIXTURES, "catch-presend-flow.json");
+var ERROR_FLOW = path.join(FIXTURES, "error-flow.json");
 var COMPLETE_FLOW = path.join(FIXTURES, "complete-flow.json");
 var JOIN_FLOW = path.join(FIXTURES, "join-flow.json");
 var LOOP_FLOW = path.join(FIXTURES, "loop-flow.json");
@@ -539,16 +541,13 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         });
     });
 
-    it("a Catch node's own real Node-RED routing is now captured as a resolved send (capture-layer proof)", function() {
-        // Known limitation (see AGENTS.md-style honest reporting): runFlow's
-        // existing fail-fast contract still throws a nonRetryable
-        // ApplicationFailure on any NODE_ERROR, so the Catch node's captured
-        // downstream branch (`n3`) is NOT currently enqueued by the Workflow
-        // even though Capture/Activities now correctly preserve it in the
-        // error's `sends` payload. Deciding whether a caught error should
-        // let the Workflow continue draining is a separate design decision,
-        // out of scope for this "smallest bridge" change - flagged as a
-        // follow-up, not silently papered over.
+    it("issue #32: a Catch node's own real Node-RED routing resolves (not rejects) so the Workflow can enqueue it (capture-layer proof)", function() {
+        // Fixed (was a known limitation): Capture's `_settleError` now
+        // resolves - instead of rejecting - when Node-RED's own
+        // `handleError` produced new sends during the `node.error()` call
+        // (a Catch node it routed to actually forwarded the message). No
+        // `result.error` means the Workflow-level drain loop below simply
+        // continues, exactly like any ordinary successful invocation.
         return bootstrap(CATCH_FLOW).then(function(h) {
             handle = h;
             capture = new Capture();
@@ -556,12 +555,45 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
             return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "catch-1" } });
         }).then(function(result) {
-            result.error.code.should.equal("NODE_ERROR");
+            should.not.exist(result.error);
+            result.handledError.code.should.equal("NODE_ERROR");
             // The Catch node (scope: ["n2"]) received the error synchronously
             // via Node-RED's own Flow.handleError and sent its own message to
             // n3 - captured here with n3's own resolved destinationId.
             result.sends.length.should.equal(1);
             result.sends[0].destinationId.should.equal("n3");
+        });
+    });
+
+    it("issue #32: a handled Catch route is enqueued and the Workflow completes normally instead of failing", function() {
+        return runWithRealFlow(CATCH_FLOW, "n2", { payload: 1, _msgid: "catch-workflow-1" }).then(function(r) {
+            // n2 throws; Node-RED's own Flow.handleError routes it to catch1
+            // (scope: ["n2"]), which sends onward to n3 - all captured as
+            // n2's own resolved sends (same ALS invocationId throughout).
+            // The Workflow enqueues n3 exactly like any ordinary send.
+            r.invoked.should.eql(["n2", "n3"]);
+            r.result.lastNode.should.equal("n3");
+        });
+    });
+
+    it("issue #32: an unhandled node error (no Catch node wired) still fails the Workflow", function() {
+        return runWithRealFlow(ERROR_FLOW, "e1", { payload: 1, _msgid: "unhandled-1" }).then(function() {
+            throw new Error("expected runFlow to throw");
+        }, function(err) {
+            err.message.should.containEql("NODE_ERROR");
+        });
+    });
+
+    it("issue #32: ordinary sends before a LATER unhandled error do not get falsely classified as a handled Catch route", function() {
+        return runWithRealFlow(CATCH_PRESEND_FLOW, "n2", { payload: 1, _msgid: "presend-1" }).then(function() {
+            throw new Error("expected runFlow to throw");
+        }, function(err) {
+            // n2 sends to n3 (ordinary output) BEFORE throwing. n3 is NOT the
+            // Catch node's own scope target, and the flow's Catch node scope
+            // does not cover n2, so the pre-error send must not be mistaken
+            // for Node-RED's own Catch routing - the Workflow must still
+            // fail for the later, genuinely unhandled error.
+            err.message.should.containEql("NODE_ERROR");
         });
     });
 

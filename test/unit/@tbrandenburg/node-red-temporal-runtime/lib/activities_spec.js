@@ -8,6 +8,7 @@ var { createExecuteNode } = require("../../../../../packages/node_modules/@tbran
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FLOW = path.join(FIXTURES, "four-node-flow.json");
 var ERROR_FLOW = path.join(FIXTURES, "error-flow.json");
+var CATCH_FLOW = path.join(FIXTURES, "catch-flow.json");
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
     this.timeout(20000);
@@ -81,6 +82,19 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
             result.error.code.should.be.a.String();
             result.error.message.should.containEql("boom");
             result.sends.should.eql([]);
+        });
+    });
+
+    it("issue #32: a node error routed to a wired Catch node resolves with sends, no error, plus a handledError marker", function() {
+        return bootWith(CATCH_FLOW).then(function(ctx) {
+            return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "m5" } });
+        }).then(function(result) {
+            should.not.exist(result.error);
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("n3");
+            result.handledError.code.should.equal("NODE_ERROR");
+            result.handledError.nodeId.should.equal("n2");
+            result.handledError.message.should.containEql("boom");
         });
     });
 });
