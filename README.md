@@ -189,24 +189,29 @@ See the [runtime package README](packages/node_modules/@tbrandenburg/node-red-te
 
 ## Existing Node-RED editor
 
-**Today:** the alpha runner is headless and the CLI/demo flow is the supported path.
-
-**Next:** [issue #39](https://github.com/tbrandenburg/node-red-temporal/issues/39) tracks deploying from an existing Node-RED editor to a separate Temporal-backed runtime while keeping the normal Node-RED Deploy button and avoiding a second editor. This issue is currently **open and not yet implemented**.
-
-The intended user experience is:
+The primary local UX uses an ordinary Node-RED editor as design time and a
+separate node-red-temporal runner as execution time:
 
 ```text
 existing Node-RED editor
-        │
         │ normal Deploy
         ▼
-remote node-red-temporal runtime
+node-red-temporal runner
         │
         ▼
      Temporal
 ```
 
-Until #39 is implemented, do not interpret this section as an available feature.
+`make run` wires this setup together locally: an ordinary editor (A) whose
+normal Deploy button ships flows to a separate runner (B), which serves the
+Admin API with its own editor disabled.
+
+For an existing Node-RED installation, install
+`@tbrandenburg/node-red-temporal-runtime` into the editor's userDir,
+configure the remote-deploy storage adapter, and point it at runner B. See
+the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#use-an-existing-node-red-editor-with-a-temporal-runtime-issue-39)
+for the exact `settings.js` sequence, `credentialSecret` requirement, runner
+setup, and revert instructions.
 
 ## Known limitations
 
