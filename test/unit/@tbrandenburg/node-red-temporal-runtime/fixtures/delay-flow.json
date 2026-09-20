@@ -1,0 +1,54 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "delay1"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "delay1",
+        "type": "delay",
+        "z": "tab1",
+        "name": "real delay",
+        "pauseType": "delay",
+        "timeout": "200",
+        "timeoutUnits": "milliseconds",
+        "rate": "1",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "allowrate": false,
+        "outputs": 1,
+        "wires": [
+            [
+                "n2"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    }
+]
