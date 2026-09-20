@@ -14,6 +14,7 @@ var MULTI_SEND_FLOW = path.join(FIXTURES, "multi-send-flow.json");
 var MULTI_OUTPUT_FLOW = path.join(FIXTURES, "multi-output-flow.json");
 var LINK_FLOW = path.join(FIXTURES, "link-flow.json");
 var SUBFLOW_FLOW = path.join(FIXTURES, "subflow-flow.json");
+var NESTED_SUBFLOW_FLOW = path.join(FIXTURES, "nested-subflow-flow.json");
 var CATCH_FLOW = path.join(FIXTURES, "catch-flow.json");
 var COMPLETE_FLOW = path.join(FIXTURES, "complete-flow.json");
 var JOIN_FLOW = path.join(FIXTURES, "join-flow.json");
@@ -596,6 +597,28 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             // wired to n3) IS still captured normally - a real external hop
             // must never be silently dropped just because internal hops
             // are now let through.
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("n3");
+            result.sends[0].msg.payload.should.equal(10);
+        });
+    });
+
+    it("issue #33: nested subflows - internal hops at BOTH levels (outer instance -> inner instance, inner instance -> its internal function) are routed locally by Node-RED and never suppressed/timed out; only the hop leaving the outer subflow's boundary (to n3) is captured", function() {
+        return bootstrap(NESTED_SUBFLOW_FLOW).then(function(h) {
+            handle = h;
+            capture = new Capture({ timeoutMs: 500 });
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 5, _msgid: "nested-subflow-1" } });
+        }).then(function(result) {
+            // Invoking n2 (the OUTER subflow instance) resolves normally
+            // instead of timing out - both the hop into the nested inner
+            // subflow instance and that inner instance's own hop to its
+            // internal doubling function are routed locally, not
+            // suppressed as Activity-worthy sends.
+            should(result.error).be.undefined();
+            // Only the outer subflow's genuine external hop (its output
+            // boundary wired to n3) is captured - exactly one send.
             result.sends.length.should.equal(1);
             result.sends[0].destinationId.should.equal("n3");
             result.sends[0].msg.payload.should.equal(10);
