@@ -169,3 +169,121 @@ start:
 demo-run demo-start demo-status demo-stop:
 	@echo "'make $@' was renamed to 'make $(subst demo-,,$@)' (issue #43): see AGENTS.md/README.md." >&2
 	@exit 1
+
+# --- Docker dev onboarding (issue #52) ---------------------------------
+#
+# These targets run the SAME editor A + runner B lifecycle as `make run`/
+# `make status`/`make stop` above, just inside the `dev` container defined
+# in compose.yaml, via `docker compose exec ... make run` etc. They do not
+# reimplement or duplicate that lifecycle - they only add the container
+# start/stop/wait plumbing around it.
+#
+# ADMIN_HOST decision (verified live during S3): the Makefile's `run` target
+# binds runner B's admin API to `ADMIN_HOST := 127.0.0.1` (hardcoded).
+# Inside the `dev` container this is fine and unchanged - editor A and
+# runner B both run inside the SAME container and talk to each other over
+# its own loopback, exactly like the non-Docker lifecycle. Docker's
+# `1881:1881` port publish (compose.yaml) cannot reach a loopback-only bind
+# from the host, but the issue's acceptance criteria only requires the
+# editor (1880) and Temporal UI (8233) to be host-reachable, and Deploy
+# works end-to-end through 1880 without host access to 1881. ADMIN_HOST is
+# therefore left untouched - making it host-reachable is unneeded scope.
+
+COMPOSE := docker compose
+
+# Default namespace for `make docker-run-external` when the caller doesn't
+# set TEMPORAL_NAMESPACE explicitly (?= leaves an env/CLI-supplied value
+# untouched).
+TEMPORAL_NAMESPACE ?= default
+
+.PHONY: docker-run docker-run-external docker-stop docker-status docker-shell docker-logs
+
+## docker-run: start the local Docker stack and boot editor A + runner B
+## inside the `dev` container via the existing `make run` lifecycle.
+docker-run:
+	@$(COMPOSE) up -d --build postgres temporal temporal-ui dev
+	@echo "Waiting for temporal and dev services..."
+	@i=0; \
+	while [ $$i -lt 60 ]; do \
+		temporal_health=$$($(COMPOSE) ps --format json temporal 2>/dev/null | grep -o '"Health":"[a-z]*"' | head -1); \
+		dev_state=$$($(COMPOSE) ps --format json dev 2>/dev/null | grep -o '"State":"[a-z]*"' | head -1); \
+		if echo "$$temporal_health" | grep -q healthy && echo "$$dev_state" | grep -q running; then \
+			echo "temporal healthy, dev running"; \
+			break; \
+		fi; \
+		i=$$((i+1)); \
+		sleep 2; \
+	done
+	@$(COMPOSE) exec -T dev make run
+	@echo ""
+	@echo "Node-RED editor : http://localhost:$(EDITOR_PORT)"
+	@echo "Temporal UI     : http://localhost:8233"
+
+## docker-run-external: start ONLY the `dev` service (never postgres/temporal/
+## temporal-ui) and boot editor A + runner B inside it against an externally
+## supplied Temporal server (Mode B, issue #52). Requires TEMPORAL_ADDRESS.
+##
+## `--no-deps` stops compose from auto-starting `dev`'s `depends_on: temporal`
+## (verified live during S4: `docker compose up -d --no-deps dev` creates
+## only the `dev` container, `temporal`/`postgres`/`temporal-ui` are never
+## created). The external TEMPORAL_ADDRESS/TEMPORAL_NAMESPACE are passed via
+## `docker compose exec -e ...`, which overrides the `dev` service's own
+## `environment:` block (TEMPORAL_ADDRESS: temporal:7233) for this exec only
+## - compose.yaml's own defaults are untouched for `make docker-run`.
+## For host.docker.internal:<port> external addresses on Linux, compose.yaml's
+## `dev` service carries a matching `extra_hosts: host.docker.internal:
+## host-gateway` (verified live during S4).
+docker-run-external:
+	@if [ -z "$(TEMPORAL_ADDRESS)" ]; then \
+		echo "ERROR: TEMPORAL_ADDRESS must be set, e.g.:" >&2; \
+		echo "  TEMPORAL_ADDRESS=host.docker.internal:7233 make docker-run-external" >&2; \
+		exit 1; \
+	fi
+	@$(COMPOSE) up -d --build --no-deps dev
+	@echo "Waiting for dev service..."
+	@i=0; \
+	while [ $$i -lt 60 ]; do \
+		dev_state=$$($(COMPOSE) ps --format json dev 2>/dev/null | grep -o '"State":"[a-z]*"' | head -1); \
+		if echo "$$dev_state" | grep -q running; then \
+			echo "dev running"; \
+			break; \
+		fi; \
+		i=$$((i+1)); \
+		sleep 2; \
+	done
+	@$(COMPOSE) exec -T \
+		-e TEMPORAL_ADDRESS="$(TEMPORAL_ADDRESS)" \
+		-e TEMPORAL_NAMESPACE="$(TEMPORAL_NAMESPACE)" \
+		dev make run
+	@echo ""
+	@echo "Connected to external Temporal : $(TEMPORAL_ADDRESS) (namespace: $(TEMPORAL_NAMESPACE))"
+	@echo "Node-RED editor                : http://localhost:$(EDITOR_PORT)"
+
+## docker-stop: stop editor A + runner B inside the dev container, then
+## stop/remove the compose stack (volumes preserved - never passes -v).
+docker-stop:
+	@if $(COMPOSE) ps --format json dev 2>/dev/null | grep -q '"State":"running"'; then \
+		$(COMPOSE) exec -T dev make stop || true; \
+	else \
+		echo "dev service not running - skipping in-container stop"; \
+	fi
+	@$(COMPOSE) down
+
+## docker-status: report compose service state, plus editor A/runner B
+## state inside the dev container if it is up.
+docker-status:
+	@$(COMPOSE) ps
+	@if $(COMPOSE) ps --format json dev 2>/dev/null | grep -q '"State":"running"'; then \
+		echo ""; \
+		$(COMPOSE) exec -T dev make status; \
+	fi
+
+## docker-shell: open an interactive shell inside the dev container.
+docker-shell:
+	@$(COMPOSE) exec dev bash
+
+## docker-logs: follow logs for the dev and temporal services (the two
+## most relevant for onboarding); use `docker compose logs -f` directly for
+## the full multi-service stream.
+docker-logs:
+	@$(COMPOSE) logs -f dev temporal
