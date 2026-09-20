@@ -60,6 +60,35 @@ function probeNodeModule(RED) {
     RED.nodes.registerType("temporal-probe", ProbeNode);
 }
 
+// issue #53: a second, test-only probe registered against the REAL
+// pre-1.0 Node-RED input-handler API - 1 declared parameter, no `send`/
+// `done` arguments - to prove Capture's legacy-node behavior against a
+// real runtime rather than a mock. `node.send`/`node.error` (inherited,
+// unmodified upstream Node.prototype methods) are used directly, exactly
+// as real legacy contrib nodes do.
+function legacyProbeNodeModule(RED) {
+    function LegacyProbeNode(config) {
+        RED.nodes.createNode(this, config);
+        var node = this;
+        this.on("input", function(msg) {
+            switch (msg.mode) {
+                case "legacySyncSend":
+                    node.send({ payload: "legacy-sync", _msgid: msg._msgid });
+                    break;
+                case "legacyAsyncSend":
+                    setTimeout(function() {
+                        node.send({ payload: "legacy-async", _msgid: msg._msgid });
+                    }, msg.delayMs || 20);
+                    break;
+                default:
+                    // legacySyncNoSend: do nothing at all.
+                    break;
+            }
+        });
+    }
+    RED.nodes.registerType("temporal-legacy-probe", LegacyProbeNode);
+}
+
 describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
 
     beforeEach(function(done) {
@@ -74,6 +103,10 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
 
     function loadFlow(flow) {
         return new Promise((resolve) => helper.load(probeNodeModule, flow, resolve));
+    }
+
+    function loadLegacyFlow(flow) {
+        return new Promise((resolve) => helper.load([probeNodeModule, legacyProbeNodeModule], flow, resolve));
     }
 
     it("Q1: resolves with sends: [] when the node sends nothing and calls done()", function() {
@@ -454,5 +487,127 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
             result.sends[0].destinationId.should.equal("s1");
             capture.uninstall();
         });
+    });
+
+    // --- issue #53: legacy (pre-1.0, non-done()) input handlers ---
+    //
+    // These use a REAL Node-RED runtime and a REAL pre-1.0-style `input`
+    // handler (1 declared param, no `send`/`done` arguments) - not a mock -
+    // to prove the discriminator (`node._expectedDoneCount`, read via
+    // upstream's own unmodified `Node.js`) and the fail-fast behavior it
+    // drives.
+
+    it("issue #53 L1: a legacy node that sends synchronously and never calls done() rejects immediately with LEGACY_NODE_NO_DONE, not a timeout, and still returns its sends", function() {
+        var capture = new Capture({ timeoutMs: 5000 });
+        capture.install(RED);
+        var start;
+        return loadLegacyFlow([
+            { id: "p1", type: "temporal-legacy-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "legacySyncSend" };
+            start = Date.now();
+            return capture.around(p1, msg, function() { p1.receive(msg); })
+                .then(function() { throw new Error("expected rejection"); }, function(rejection) {
+                    (Date.now() - start).should.be.below(1000); // fail-fast, not the 5s timeout
+                    rejection.legacyNoDone.should.be.true();
+                    rejection.nodeId.should.equal("p1");
+                    rejection.error.code.should.equal("LEGACY_NODE_NO_DONE");
+                    rejection.sends.length.should.equal(1);
+                    rejection.sends[0].msg.payload.should.equal("legacy-sync");
+                });
+        }).then(function() { capture.uninstall(); });
+    });
+
+    it("issue #53 L2: a legacy node that sends nothing and never calls done() rejects immediately with LEGACY_NODE_NO_DONE and empty sends", function() {
+        var capture = new Capture({ timeoutMs: 5000 });
+        capture.install(RED);
+        var start;
+        return loadLegacyFlow([
+            { id: "p1", type: "temporal-legacy-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "legacySyncNoSend" };
+            start = Date.now();
+            return capture.around(p1, msg, function() { p1.receive(msg); })
+                .then(function() { throw new Error("expected rejection"); }, function(rejection) {
+                    (Date.now() - start).should.be.below(1000);
+                    rejection.legacyNoDone.should.be.true();
+                    rejection.error.code.should.equal("LEGACY_NODE_NO_DONE");
+                    rejection.sends.should.eql([]);
+                });
+        }).then(function() { capture.uninstall(); });
+    });
+
+    it("issue #53 L3: a legacy node whose send happens ASYNCHRONOUSLY (after its handler already returned) still fails fast, and the later async send is never silently attributed to a completed/reused invocation", function() {
+        var capture = new Capture({ timeoutMs: 5000 });
+        capture.install(RED);
+        var start;
+        return loadLegacyFlow([
+            { id: "p1", type: "temporal-legacy-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "legacyAsyncSend", delayMs: 30 };
+            start = Date.now();
+            return capture.around(p1, msg, function() { p1.receive(msg); })
+                .then(function() { throw new Error("expected rejection"); }, function(rejection) {
+                    (Date.now() - start).should.be.below(1000); // did NOT wait for the 30ms async send, let alone the 5s timeout
+                    rejection.legacyNoDone.should.be.true();
+                    // The async send has not happened yet at rejection time.
+                    rejection.sends.should.eql([]);
+                });
+        }).then(function() {
+            // Let the node's delayed send actually fire; it must not throw,
+            // hang, or resurrect the already-settled invocation.
+            return new Promise((resolve) => setTimeout(resolve, 60));
+        }).then(function() {
+            capture.uninstall();
+        });
+    });
+
+    it("issue #53 L4: modern done()-based nodes are completely unaffected by the postReceive discriminator (sync, delayed and zero-send cases all unchanged)", function() {
+        var capture = new Capture({ timeoutMs: 2000 });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var zeroMsg = { mode: "zero" };
+            var multiMsg = { mode: "multi" };
+            var delayedMsg = { mode: "delayedForward", payload: "later", delayMs: 15 };
+            return Promise.all([
+                capture.around(p1, zeroMsg, function() { p1.receive(zeroMsg); }),
+                capture.around(p1, multiMsg, function() { p1.receive(multiMsg); }),
+                capture.around(p1, delayedMsg, function() { p1.receive(delayedMsg); })
+            ]);
+        }).then(function(results) {
+            results[0].sends.should.eql([]);
+            results[1].sends.length.should.equal(3);
+            results[2].sends.length.should.equal(1);
+            results[2].sends[0].msg.payload.should.equal("later");
+            capture.uninstall();
+        });
+    });
+
+    it("issue #53 L5: a genuine modern node that never calls done() still times out with the ordinary NODE_TIMEOUT rejection, not LEGACY_NODE_NO_DONE", function() {
+        var capture = new Capture({ timeoutMs: 100 });
+        capture.install(RED);
+        return loadFlow([
+            { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+            { id: "s1", type: "helper" }
+        ]).then(function() {
+            var p1 = helper.getNode("p1");
+            var msg = { mode: "hang" }; // 3-arg handler, registered with done - just never calls it
+            return capture.around(p1, msg, function() { p1.receive(msg); })
+                .then(function() { throw new Error("expected timeout rejection"); }, function(rejection) {
+                    rejection.timeout.should.be.true();
+                    should(rejection.legacyNoDone).not.be.ok();
+                    rejection.nodeId.should.equal("p1");
+                });
+        }).then(function() { capture.uninstall(); });
     });
 });

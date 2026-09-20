@@ -276,6 +276,7 @@ This is an early alpha. Important boundaries are explicit:
 - **Not every JavaScript object is a durable message.** Circular objects, functions and live sockets/streams cannot safely cross the Temporal serialization boundary. Buffer/Date/Error behavior is documented in the runtime package README.
 - **Inbound `HTTP In → HTTP Response` bridging is not implemented.** Those live `req`/`res` objects are outside the current durable message boundary; outbound `http request` is unaffected and supported (see [HTTP compatibility](#http-compatibility)).
 - **Hooks are process-global.** Run one Capture instance per Node-RED Activity-worker process.
+- **Legacy (pre-1.0) `on('input', function(msg))` node handlers fail fast, not silently.** Nodes that never receive/call a `done()` callback cannot be tracked for completion by Node-RED itself, so their Activity now fails immediately with an explicit `LEGACY_NODE_NO_DONE` error instead of hanging for the full node-execution timeout; see the runtime package's [`COMPATIBILITY.md`](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/COMPATIBILITY.md#legacy-pre-10-input-handler-nodes-issue-53-resolution).
 - **Performance is not yet characterized.** No production throughput, batching or autoscaling guidance is claimed.
 
 For the detailed serialization table and recovery semantics, see the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md).
