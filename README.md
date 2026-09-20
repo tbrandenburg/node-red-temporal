@@ -290,6 +290,16 @@ the [runtime package README](packages/node_modules/@tbrandenburg/node-red-tempor
 for the exact `settings.js` sequence, `credentialSecret` requirement, runner
 setup, and revert instructions.
 
+Editor A's own Deploy, Inject, Debug, and Context UI all keep working
+unmodified even though runner B is the one actually executing the flow:
+
+![Node-RED editor A: Debug sidebar and node status relayed from runner B](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/docs/screenshots/nodered-debug-panel.png)
+
+Every execution is a real Temporal `executeFlow` Workflow, inspectable in
+the Temporal Web UI:
+
+![Temporal UI: the workflow executed on runner B for the same Inject click](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/docs/screenshots/temporal-ui-workflow.png)
+
 ## Known limitations
 
 This is an early alpha. Important boundaries are explicit:
