@@ -1,0 +1,115 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "n2"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "subflow:sf-outer",
+        "z": "tab1",
+        "name": "outer-sf",
+        "wires": [
+            [
+                "n3"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    },
+    {
+        "id": "sf-outer",
+        "type": "subflow",
+        "name": "Outer",
+        "info": "",
+        "in": [
+            {
+                "wires": [
+                    {
+                        "id": "sf-outer-inner-instance"
+                    }
+                ]
+            }
+        ],
+        "out": [
+            {
+                "wires": [
+                    {
+                        "id": "sf-outer-inner-instance",
+                        "port": 0
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "sf-outer-inner-instance",
+        "type": "subflow:sf-inner",
+        "z": "sf-outer",
+        "name": "inner-sf",
+        "wires": [
+            []
+        ],
+        "x": 340,
+        "y": 100
+    },
+    {
+        "id": "sf-inner",
+        "type": "subflow",
+        "name": "Inner",
+        "info": "",
+        "in": [
+            {
+                "wires": [
+                    {
+                        "id": "sf-inner-fn"
+                    }
+                ]
+            }
+        ],
+        "out": [
+            {
+                "wires": [
+                    {
+                        "id": "sf-inner-fn",
+                        "port": 0
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "sf-inner-fn",
+        "type": "function",
+        "z": "sf-inner",
+        "name": "double",
+        "func": "msg.payload = msg.payload * 2; return msg;",
+        "wires": [
+            []
+        ],
+        "x": 500,
+        "y": 100
+    }
+]

@@ -152,18 +152,47 @@ accepting the diff. All new code lives in a separate package that depends on ups
   node sent. It never routes.
 - **Workflows are deterministic.** No `Date.now`, `Math.random`, filesystem or node-config reads in
   workflow code.
-- **Pass the wire graph, not node configs**, into workflow input. The worker already has the configs.
+- **Node-RED's own resolved routing is authoritative (issue #13).** Each `executeNode` Activity
+  result carries the `destinationId` Node-RED's `preRoute` hook already resolved for a `send()`; the
+  Workflow enqueues that captured `destinationId` directly instead of re-deriving it from the raw
+  wire graph. The minimal `nodeId -> wires` graph (`lib/wireGraph.js`) remains only as a fallback for
+  callers without a captured `destinationId` — pass it into workflow input (never full node configs),
+  but do not treat it as the primary routing source.
 - **`flowVersion` (content hash) is mandatory**, not deferred. Redeploying a flow otherwise
   invalidates in-flight workflow replays.
-- **Rewrite `_msgid` per Activity invocation.** `_msgid` is preserved across `send()`
-  (`nodes/Node.js:397`), so a naive msgid-keyed correlation map collides on multi-hop.
+- **Correlate Activity invocations by `invocationId`, never by `_msgid` (issue #12/#31).** `_msgid` is
+  Node-RED message identity, not Temporal Activity-invocation identity, and is preserved across
+  `send()` (`nodes/Node.js:397`) — a naive msgid-keyed correlation map collides whenever two
+  concurrent invocations hit the same node with the same `_msgid`. `Capture.around()` instead runs
+  each invocation inside a dedicated `AsyncLocalStorage`-carried `invocationId`, with a `msg`-identity
+  fallback for deferred/batched `done()` calls (e.g. Node-RED's real `join` node) — see
+  `lib/capture.js`'s docblock for the full correlation algorithm.
+- **Both combined and split worker topologies are supported (issue #16).** `lib/worker.js` exposes
+  `createActivityWorker` (boots Node-RED, installs `Capture`, owns source ingress, polls only the
+  Activity Task Queue), `createWorkflowWorker` (registers only `executeFlow`, never boots Node-RED or
+  installs `Capture`), and `createCombinedWorker` (both roles in one process — today's default). Only
+  the Activity role may boot Node-RED/install `Capture`/originate source ingress.
+- **Persistent Node-RED context stores work normally (issue #14).** `bootstrap.js` defaults to
+  Node-RED's own real storage module (real credentials file, real settings/sessions/library storage)
+  and forwards `options.settings.contextStorage` through to the real runtime unmodified — a caller
+  configuring a persistent store (e.g. the built-in `localfilesystem` store) gets context that
+  survives a worker restart. Context/config state is still worker-local process memory by default
+  (the in-memory context store), and Temporal itself never makes context durable — only an explicitly
+  configured persistent store does.
 
 ## Known limitations (state these explicitly; never paper over them)
 
 - Temporal Activities are **at-least-once**. A worker kill mid-Activity re-executes side-effecting
   nodes such as `http request`. Recovery demos must kill **between** Activities and say so.
 - Hooks are a process-global singleton, not per-flow.
-- Node and flow context remain worker-local and are lost on worker restart.
+- Context/config state is worker-local process memory by default; it survives a worker restart only
+  if a persistent Node-RED context store (e.g. the built-in `localfilesystem` store) is explicitly
+  configured (issue #14) — Temporal itself never makes context durable.
+- `flowVersion` is pinned with no migration path: a redeploy that changes the content hash fails any
+  in-flight Workflow still referencing the old `flowVersion` (non-retryable `FLOW_VERSION_MISMATCH`).
+- Fan-in (two branches converging on the same downstream node) and finite loops now work (issues #24,
+  #31, #34) — an unbounded/misconfigured loop still fails fast via the `maxNodeExecutions` guard
+  rather than draining forever.
 
 ## Working agreements
 
@@ -209,3 +238,4 @@ Milestone plan and acceptance criteria: issue
 - 2026-09-19: Pitfall: M2's capture layer patched the shared `Node.prototype.error` for the whole install()/uninstall() lifetime; a full-suite run (all specs in one mocha process) showed this leaking across unrelated node test files, causing ~80 cascading unrelated timeouts. Prevention: never patch a shared prototype/class-wide method as a global toggle — scope any such patch to a single instance and a single invocation, always restored on every exit path (resolve/reject/timeout), and verify with a full-suite run (not just the new spec file in isolation) before accepting a milestone that touches Node-RED's shared runtime classes.
 - 2026-09-19: Pitfall: issue #16 made `Worker.create()` open a real, eager `NativeConnection.connect()`; a pre-existing unit test (`deploy_spec.js`) only stubbed `Worker.create`, not the new connection call, so it passed locally (a real Temporal dev server happened to be reachable) but hung indefinitely in CI (no server reachable) — the identical shared-dev-server environment that made local validation convenient also masked the bug. Prevention: whenever adding a new real network/connection call to already-tested production code, grep every existing test exercising that code path and add the matching stub — do not rely on "it passed locally" when a long-lived local service is incidentally reachable.
 - 2026-09-19: Pitfall: fixing #24's queue-drain scheduling deadlock (sequential await -> wave-based `Promise.all`) surfaced a second, independent `capture.js` ALS-attribution bug in the real Join node only once both fan-in branches were actually dispatched concurrently — the original bug had masked it entirely. Prevention: when a concurrency-related scheduling fix makes previously-unreachable code paths reachable, re-run the real end-to-end fixture (not just new mock-based unit tests) before declaring the issue fully fixed, and file any newly-exposed bug as its own issue rather than silently expanding scope.
+- 2026-09-20: Pitfall: a docs-refresh subagent (#37) assigned to edit root `AGENTS.md` from an isolated worktree briefly edited the coordinator's root-worktree copy of the same file by mistake (both worktrees share the identical relative path `AGENTS.md`), caught only via a manual `git status` check. Prevention: when any subagent's assigned scope includes a file that also exists at the same relative path in the coordinator's own worktree, tell it explicitly to `pwd`/verify its cwd is the worktree path before every edit, and the coordinator must always `git status`/`git diff` its own tree immediately after every subagent with root-file access reports done — before trusting its handoff.

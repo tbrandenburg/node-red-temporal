@@ -14,7 +14,10 @@ var MULTI_SEND_FLOW = path.join(FIXTURES, "multi-send-flow.json");
 var MULTI_OUTPUT_FLOW = path.join(FIXTURES, "multi-output-flow.json");
 var LINK_FLOW = path.join(FIXTURES, "link-flow.json");
 var SUBFLOW_FLOW = path.join(FIXTURES, "subflow-flow.json");
+var NESTED_SUBFLOW_FLOW = path.join(FIXTURES, "nested-subflow-flow.json");
 var CATCH_FLOW = path.join(FIXTURES, "catch-flow.json");
+var CATCH_PRESEND_FLOW = path.join(FIXTURES, "catch-presend-flow.json");
+var ERROR_FLOW = path.join(FIXTURES, "error-flow.json");
 var COMPLETE_FLOW = path.join(FIXTURES, "complete-flow.json");
 var JOIN_FLOW = path.join(FIXTURES, "join-flow.json");
 var LOOP_FLOW = path.join(FIXTURES, "loop-flow.json");
@@ -495,7 +498,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         }
     });
 
-    function runWithRealFlow(flowFile, startNode, startMsg) {
+    function runWithRealFlow(flowFile, startNode, startMsg, maxNodeExecutions) {
         return bootstrap(flowFile).then(function(h) {
             handle = h;
             capture = new Capture();
@@ -509,7 +512,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             // graph deliberately NOT extracted from flowFile (or extracted but
             // irrelevant for link-flow) - proves the run is driven entirely by
             // Node-RED's own resolved destinationId, not by a wire-graph lookup.
-            return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: startNode, startMsg: startMsg })
+            return runFlow({ executeNode: executeNode, graph: {}, flowVersion: h.flowVersion, startNode: startNode, startMsg: startMsg, maxNodeExecutions: maxNodeExecutions })
                 .then(function(result) {
                     return { invoked: invoked, result: result };
                 });
@@ -538,16 +541,13 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         });
     });
 
-    it("a Catch node's own real Node-RED routing is now captured as a resolved send (capture-layer proof)", function() {
-        // Known limitation (see AGENTS.md-style honest reporting): runFlow's
-        // existing fail-fast contract still throws a nonRetryable
-        // ApplicationFailure on any NODE_ERROR, so the Catch node's captured
-        // downstream branch (`n3`) is NOT currently enqueued by the Workflow
-        // even though Capture/Activities now correctly preserve it in the
-        // error's `sends` payload. Deciding whether a caught error should
-        // let the Workflow continue draining is a separate design decision,
-        // out of scope for this "smallest bridge" change - flagged as a
-        // follow-up, not silently papered over.
+    it("issue #32: a Catch node's own real Node-RED routing resolves (not rejects) so the Workflow can enqueue it (capture-layer proof)", function() {
+        // Fixed (was a known limitation): Capture's `_settleError` now
+        // resolves - instead of rejecting - when Node-RED's own
+        // `handleError` produced new sends during the `node.error()` call
+        // (a Catch node it routed to actually forwarded the message). No
+        // `result.error` means the Workflow-level drain loop below simply
+        // continues, exactly like any ordinary successful invocation.
         return bootstrap(CATCH_FLOW).then(function(h) {
             handle = h;
             capture = new Capture();
@@ -555,12 +555,45 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
             return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "catch-1" } });
         }).then(function(result) {
-            result.error.code.should.equal("NODE_ERROR");
+            should.not.exist(result.error);
+            result.handledError.code.should.equal("NODE_ERROR");
             // The Catch node (scope: ["n2"]) received the error synchronously
             // via Node-RED's own Flow.handleError and sent its own message to
             // n3 - captured here with n3's own resolved destinationId.
             result.sends.length.should.equal(1);
             result.sends[0].destinationId.should.equal("n3");
+        });
+    });
+
+    it("issue #32: a handled Catch route is enqueued and the Workflow completes normally instead of failing", function() {
+        return runWithRealFlow(CATCH_FLOW, "n2", { payload: 1, _msgid: "catch-workflow-1" }).then(function(r) {
+            // n2 throws; Node-RED's own Flow.handleError routes it to catch1
+            // (scope: ["n2"]), which sends onward to n3 - all captured as
+            // n2's own resolved sends (same ALS invocationId throughout).
+            // The Workflow enqueues n3 exactly like any ordinary send.
+            r.invoked.should.eql(["n2", "n3"]);
+            r.result.lastNode.should.equal("n3");
+        });
+    });
+
+    it("issue #32: an unhandled node error (no Catch node wired) still fails the Workflow", function() {
+        return runWithRealFlow(ERROR_FLOW, "e1", { payload: 1, _msgid: "unhandled-1" }).then(function() {
+            throw new Error("expected runFlow to throw");
+        }, function(err) {
+            err.message.should.containEql("NODE_ERROR");
+        });
+    });
+
+    it("issue #32: ordinary sends before a LATER unhandled error do not get falsely classified as a handled Catch route", function() {
+        return runWithRealFlow(CATCH_PRESEND_FLOW, "n2", { payload: 1, _msgid: "presend-1" }).then(function() {
+            throw new Error("expected runFlow to throw");
+        }, function(err) {
+            // n2 sends to n3 (ordinary output) BEFORE throwing. n3 is NOT the
+            // Catch node's own scope target, and the flow's Catch node scope
+            // does not cover n2, so the pre-error send must not be mistaken
+            // for Node-RED's own Catch routing - the Workflow must still
+            // fail for the later, genuinely unhandled error.
+            err.message.should.containEql("NODE_ERROR");
         });
     });
 
@@ -577,6 +610,46 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
         return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }).then(function(r) {
             r.invoked.should.eql(["loop1", "loop1", "loop1", "n2"]);
         });
+    });
+
+    it("issue #34: a finite loop below the configured maxNodeExecutions limit is unaffected", function() {
+        // LOOP_FLOW naturally terminates after 4 total node executions
+        // (loop1 x3, then n2) - a limit comfortably above that must not
+        // change behavior at all.
+        return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }, 10).then(function(r) {
+            r.invoked.should.eql(["loop1", "loop1", "loop1", "n2"]);
+        });
+    });
+
+    it("issue #34: a loop that would exceed maxNodeExecutions fails fast with a non-retryable FLOW_EXECUTION_LIMIT error instead of running to natural completion", function() {
+        // Same finite LOOP_FLOW fixture, but with a maxNodeExecutions so low
+        // (2) that it trips BEFORE the loop's own natural 4-execution
+        // termination - proves the limit is enforced deterministically and
+        // does not depend on a truly-infinite fixture to exercise it.
+        return runWithRealFlow(LOOP_FLOW, "loop1", { payload: 1, _msgid: "loop-1" }, 2).then(function() {
+            throw new Error("expected runFlow to throw FLOW_EXECUTION_LIMIT");
+        }, function(err) {
+            err.type.should.equal("FLOW_EXECUTION_LIMIT");
+            err.nonRetryable.should.equal(true);
+        });
+    });
+
+    it("issue #34: every scheduled node invocation in a fan-out wave counts toward the limit, not just one per wave", function() {
+        // n1 fans out to n3 AND n4 (2 executions in wave 2) after itself (1
+        // execution in wave 1) = 3 total. A limit of 2 must trip on the
+        // fan-out wave even though only 1 "logical" node produced it,
+        // proving the counter counts invocations, not waves or source nodes.
+        var fanoutGraph = { n1: [["n3", "n4"]], n3: [[]], n4: [[]] };
+        var executeNode = function(input) {
+            return Promise.resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: {} }, { port: 0, msg: {} }] : [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: fanoutGraph, flowVersion: "v1", startNode: "n1", startMsg: {}, maxNodeExecutions: 2 })
+            .then(function() {
+                throw new Error("expected runFlow to throw FLOW_EXECUTION_LIMIT");
+            }, function(err) {
+                err.type.should.equal("FLOW_EXECUTION_LIMIT");
+                err.nonRetryable.should.equal(true);
+            });
     });
 
     it("issue #23: a subflow instance executes through its normal Node-RED runtime representation - the subflow's OWN internal routing (n2 -> its internal doubling function) is no longer suppressed/timed out, and the subflow's real external hop to n3 is still captured", function() {
@@ -596,6 +669,28 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - real Node-RED 
             // wired to n3) IS still captured normally - a real external hop
             // must never be silently dropped just because internal hops
             // are now let through.
+            result.sends.length.should.equal(1);
+            result.sends[0].destinationId.should.equal("n3");
+            result.sends[0].msg.payload.should.equal(10);
+        });
+    });
+
+    it("issue #33: nested subflows - internal hops at BOTH levels (outer instance -> inner instance, inner instance -> its internal function) are routed locally by Node-RED and never suppressed/timed out; only the hop leaving the outer subflow's boundary (to n3) is captured", function() {
+        return bootstrap(NESTED_SUBFLOW_FLOW).then(function(h) {
+            handle = h;
+            capture = new Capture({ timeoutMs: 500 });
+            capture.install(redUtil);
+            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            return executeNode({ flowVersion: h.flowVersion, nodeId: "n2", msg: { payload: 5, _msgid: "nested-subflow-1" } });
+        }).then(function(result) {
+            // Invoking n2 (the OUTER subflow instance) resolves normally
+            // instead of timing out - both the hop into the nested inner
+            // subflow instance and that inner instance's own hop to its
+            // internal doubling function are routed locally, not
+            // suppressed as Activity-worthy sends.
+            should(result.error).be.undefined();
+            // Only the outer subflow's genuine external hop (its output
+            // boundary wired to n3) is captured - exactly one send.
             result.sends.length.should.equal(1);
             result.sends[0].destinationId.should.equal("n3");
             result.sends[0].msg.payload.should.equal(10);

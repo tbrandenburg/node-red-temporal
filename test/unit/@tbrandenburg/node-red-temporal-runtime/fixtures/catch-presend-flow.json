@@ -1,0 +1,30 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n2",
+        "type": "function",
+        "z": "tab1",
+        "name": "send-then-boom",
+        "func": "node.send({ payload: 'sent-before-error', _msgid: msg._msgid }); throw new Error('boom');",
+        "wires": [
+            [
+                "n3"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "debug",
+        "z": "tab1",
+        "name": "ordinary-downstream",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    }
+]
