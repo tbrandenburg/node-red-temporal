@@ -196,5 +196,29 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         out.should.match(/--namespace/);
         out.should.match(/--workflow-task-queue/);
         out.should.match(/--activity-task-queue/);
+        out.should.match(/--admin-port/);
+        out.should.match(/--admin-host/);
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #39 --admin-port", function() {
+    it("worker --role workflow --admin-port rejects (the workflow role never boots Node-RED)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "workflow", "admin-port": "1881" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--admin-port is not supported for --role workflow/);
+        });
+    });
+
+    it("worker --role activity --admin-port with a non-numeric value rejects with a clear error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json", "admin-port": "not-a-port" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--admin-port must be a non-negative integer/);
+        });
     });
 });
