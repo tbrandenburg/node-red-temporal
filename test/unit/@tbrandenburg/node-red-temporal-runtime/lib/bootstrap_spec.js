@@ -129,6 +129,29 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/bootstrap", function() {
         });
     });
 
+    describe("options.adminApi (issue #39 M2: runner Admin API surface)", function() {
+        // NOTE: the actual admin-server-boots-and-accepts-a-deploy behavior
+        // is verified in bootstrap_adminApi_spec.js via a SPAWNED child
+        // process, not here. `@node-red/editor-api` and `@node-red/registry`
+        // hold process-wide module-level singleton state (icon/template
+        // routes, `disableEditor` handling, etc.) that upstream's OWN
+        // editor-api unit tests (test/unit/@node-red/editor-api/**) also
+        // depend on being pristine within this same mocha process - actually
+        // exercising `options.adminApi` in-process here was observed to
+        // permanently break ~60 unrelated, later-running tests (both ours
+        // and upstream's) for the rest of the full-suite run. See this
+        // repo's Lessons Learned: "never patch a shared prototype/
+        // class-wide method as a global toggle" - the same principle
+        // applies to booting a real Admin API server that touches these
+        // shared singletons.
+        it("does not start an HTTP server at all when options.adminApi is omitted", function() {
+            return bootstrap(FLOW).then(function(handle) {
+                runtimeHandle = handle;
+                should.not.exist(handle.adminApiAddress);
+            });
+        });
+    });
+
     it("computeFlowVersion is a pure function usable without bootstrapping a runtime", function() {
         var fs = require("fs");
         var a = JSON.parse(fs.readFileSync(FLOW, "utf8"));
