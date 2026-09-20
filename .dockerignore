@@ -1,0 +1,8 @@
+.git
+node_modules
+.node-red-temporal
+coverage
+.worktrees
+.agents
+.playwright-mcp
+npm-debug.log

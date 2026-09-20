@@ -85,6 +85,46 @@ make stop
 
 For the full CLI, split-worker deployment, MQTT gate, recovery demo, and serialization behavior, see the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md).
 
+## Docker quick start
+
+Prefer a container over installing Node.js/Temporal locally? Run the whole
+stack (Postgres, Temporal, Temporal UI, and a `dev` container running editor
+A + runner B) with Docker Compose:
+
+```bash
+make docker-run
+```
+
+Then open:
+
+- Node-RED editor: http://localhost:1880
+- Temporal UI: http://localhost:8233
+
+Build or import a normal Node-RED flow and press **Deploy** - it ships to the
+runner and executes durably on Temporal, exactly like the non-Docker path.
+
+Useful commands:
+
+```bash
+make docker-status   # compose + editor/runner state
+make docker-logs      # follow dev + temporal logs
+make docker-shell     # shell into the dev container
+make docker-stop      # stop everything (volumes/state preserved)
+```
+
+### Use an existing Temporal server
+
+```bash
+TEMPORAL_ADDRESS=host.docker.internal:17233 \
+TEMPORAL_NAMESPACE=default \
+make docker-run-external
+```
+
+This starts only the `dev` container against the given `TEMPORAL_ADDRESS`;
+the local Postgres/Temporal/Temporal UI services are never started or
+stopped by this command, and `make docker-stop` never touches an externally
+managed Temporal server.
+
 ## How it works
 
 ```mermaid

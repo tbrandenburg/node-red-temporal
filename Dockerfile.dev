@@ -1,0 +1,30 @@
+# Development image for node-red-temporal (issue #52).
+#
+# Boring, single-purpose dev container: Node.js 22 + a small set of
+# standard CLI tools needed to build/run/test the repo. It does not bundle
+# Temporal, PostgreSQL, Docker, Kubernetes/Helm/Terraform, browser
+# automation, or IDE tooling.
+FROM node:22-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        make \
+        curl \
+        jq \
+        procps \
+        iproute2 \
+        netcat-openbsd \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Install dependencies first so this layer is cached unless the lockfile
+# or manifest changes.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+CMD ["bash"]

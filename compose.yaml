@@ -1,0 +1,126 @@
+# Local Docker development stack for node-red-temporal (issue #52).
+#
+# Services:
+#   postgres      - persistence for the local Temporal server (postgres:16)
+#   temporal      - Temporal server with bundled schema auto-setup
+#   temporal-ui   - Temporal Web UI
+#   temporal-tools - optional Temporal CLI/admin tools (profile: tools, never
+#                    starts by default; run with
+#                    `docker compose run --rm temporal-tools temporal ...`)
+#   dev           - the project's own development container (Dockerfile.dev):
+#                   ordinary Node-RED editor A + node-red-temporal runner B
+#
+# Pinned image versions (keep in sync with M0 research in issue #52):
+#   postgres:16
+#   temporalio/auto-setup:1.29.7               (see note below - 1.32.0 does not exist)
+#   temporalio/ui:2.54.1
+#   temporalio/admin-tools:1.29.7-tctl-1.18.4-cli-1.7.2  (matched to auto-setup above)
+#
+# NOTE on version deviation: the M0-pinned auto-setup/admin-tools version
+# (1.32.0) does not exist on Docker Hub for `temporalio/auto-setup` - that
+# image's tag history stops at 1.29.7 (confirmed live against the Docker Hub
+# API during S2). `temporalio/admin-tools` has no standalone `1.29.7` tag
+# either (only the fully-qualified `1.29.7-tctl-<ver>-cli-<ver>` form, or the
+# minor-only `1.29` floating tag) - confirmed live during final validation
+# after `1.29.7` failed to pull with "manifest unknown". Pinned to the
+# fully-qualified tag rather than the floating `1.29` to keep the same
+# "no unbounded/loosely-pinned tags" intent as the rest of this file.
+# `temporalio/ui:2.54.1` exists as pinned and is unchanged.
+#
+# External Temporal (Mode B) and the Makefile `docker-run`/`docker-stop`/etc.
+# targets are out of scope for this file (see issue #52) - this compose file
+# only wires the local stack; the `dev` service just builds and stays up.
+#
+# NOTE: no DYNAMIC_CONFIG_FILE_PATH is set - temporalio/auto-setup:1.29.7's
+# bundled `config/dynamicconfig/development-sql.yaml` does not exist in this
+# image (verified live); the entrypoint's own default (no dynamic config
+# client) is used instead, which is sufficient for this dev stack.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - temporal-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    healthcheck:
+      # `temporal operator cluster health` only succeeds against this
+      # container's own bound IP (not `localhost`/`temporal`, which do not
+      # resolve for its own gRPC listener in this image - verified live).
+      test: ["CMD-SHELL", "temporal operator cluster health --address \"$(hostname -i):7233\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:2.54.1
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8233:8080"
+
+  temporal-tools:
+    image: temporalio/admin-tools:1.29.7-tctl-1.18.4-cli-1.7.2
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    profiles: ["tools"]
+
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+    ports:
+      - "1880:1880"
+      - "1881:1881"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    # Lets `TEMPORAL_ADDRESS=host.docker.internal:<port>` (issue #52 Mode B,
+    # `make docker-run-external`) resolve on Linux hosts too, where
+    # `host.docker.internal` is not provided by the Docker daemon by
+    # default (Docker Desktop already provides it - this is a no-op there).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    tty: true
+    stdin_open: true
+    command: ["sleep", "infinity"]
+
+volumes:
+  temporal-db:
+  node_modules:
