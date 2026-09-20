@@ -251,6 +251,20 @@ The release target creates the version commit and tag locally; `gh release
 create` publishes the GitHub release and tag to the fork. Never aim these
 commands at `node-red/node-red` or the read-only `upstream` remote.
 
+### Existing editor → remote runner (issue #39)
+
+Run a runner (B) with its Admin API exposed and editor disabled:
+
+```bash
+node packages/node_modules/@tbrandenburg/node-red-temporal-runtime/bin/node-red-temporal \
+  worker --role activity --flow <flow.json> --admin-port 1881
+```
+
+Point an ordinary Node-RED editor (A) at it via `settings.js`'s `storageModule`
+(`lib/remoteDeployStorage.js`), then use A's normal Deploy button as before.
+Full onboarding steps, config example, and revert instructions: see the
+[runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#use-an-existing-node-red-editor-with-a-temporal-runtime-issue-39).
+
 ## Current work
 
 Milestone plan and acceptance criteria: issue
