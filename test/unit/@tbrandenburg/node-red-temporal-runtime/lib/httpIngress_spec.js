@@ -387,28 +387,43 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/httpIngress - async route 
     });
 });
 
-describe("@tbrandenburg/node-red-temporal-runtime/lib/httpIngress - sync route (M2/M3 scope)", function() {
+describe("@tbrandenburg/node-red-temporal-runtime/lib/httpIngress - sync route (issue #58 M4)", function() {
     var httpIngress;
     var server;
     var boundPort;
     var startStub;
+    var getHandleStub;
+    var resultStub;
     var clientStub;
     var temporalConfig = { workflowTaskQueue: "wf-q", activityTaskQueue: "act-q" };
+    var extraDeps;
 
-    beforeEach(function() {
+    /**
+     * (Re)builds the fake handle/client/server. `resultStub` defaults to
+     * never resolving; individual tests override it via `.resolves(...)`
+     * or `.rejects(...)` before issuing the request.
+     */
+    function setup(deps) {
         httpIngress = freshHttpIngress();
         startStub = sinon.stub().resolves({});
-        clientStub = stubClientModule(startStub);
-        server = httpIngress.createHttpIngressServer({
+        resultStub = sinon.stub().returns(new Promise(function() {})); // never resolves by default
+        var handle = { result: resultStub };
+        getHandleStub = sinon.stub().returns(handle);
+        clientStub = stubClientModule(startStub, getHandleStub);
+        server = httpIngress.createHttpIngressServer(Object.assign({
             getClient: function() { return Promise.resolve(clientStub.fakeClient); },
             getNode: sinon.stub().returns({ id: "n1" }),
             currentFlowInfo: sinon.stub().resolves({ graph: {}, nodeMeta: {}, flowVersion: "v1" }),
             temporalConfig: temporalConfig,
             port: 0
-        });
+        }, deps || {}));
         return server.listen().then(function(bound) {
             boundPort = bound.port;
         });
+    }
+
+    beforeEach(function() {
+        return setup();
     });
 
     afterEach(function() {
@@ -417,11 +432,213 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/httpIngress - sync route (
     });
 
     it("matches both path params and threads resultNodeId into the Workflow input", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: { ok: true } } });
         return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", { a: 1 }).then(function(res) {
-            res.statusCode.should.equal(202);
+            res.statusCode.should.equal(200);
             var startArgs = startStub.firstCall.args[1];
             startArgs.args[0].resultNodeId.should.equal("n2");
             startArgs.args[0].startNode.should.equal("n1");
+        });
+    });
+
+    it("maps a default (absent) statusCode to 200 and JSON-encodes an object payload", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: { hello: "world" } } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+            res.body.should.eql({ hello: "world" });
+        });
+    });
+
+    it("maps an explicit statusCode and headers from resultMsg", function() {
+        resultStub.resolves({
+            flowVersion: "v1",
+            lastNode: "n2",
+            resultMsg: { statusCode: 201, headers: { "X-Custom": "yes" }, payload: { created: true } }
+        });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(201);
+            res.body.should.eql({ created: true });
+        });
+    });
+
+    it("maps a string payload to text bytes with a text/plain content-type", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: "hello world" } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+            res.text.should.equal("hello world");
+        });
+    });
+
+    it("maps an undefined payload to an empty response body", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: undefined } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+            res.text.should.equal("");
+        });
+    });
+
+    it("maps a Buffer payload to raw bytes", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: Buffer.from([1, 2, 3, 4]) } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+            Buffer.from(res.text, "binary").length.should.be.above(0);
+        });
+    });
+
+    it("maps a Uint8Array payload to raw bytes", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: new Uint8Array([5, 6, 7]) } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+        });
+    });
+
+    it("falls back to 200 for an out-of-range statusCode instead of failing", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { statusCode: 999, payload: { a: 1 } } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+            res.body.should.eql({ a: 1 });
+        });
+    });
+
+    it("falls back to 200 for a non-integer statusCode instead of failing", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { statusCode: 200.5, payload: { a: 1 } } });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(200);
+        });
+    });
+
+    it("responds 500 when resultMsg itself is missing/not an object", function() {
+        resultStub.resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: undefined });
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(500);
+            res.body.should.have.property("error");
+        });
+    });
+
+    it("strips hop-by-hop/framing headers from resultMsg.headers", function() {
+        resultStub.resolves({
+            flowVersion: "v1",
+            lastNode: "n2",
+            resultMsg: {
+                headers: {
+                    "Connection": "should-be-stripped",
+                    "Content-Length": "9999",
+                    "X-Keep": "yes"
+                },
+                payload: { a: 1 }
+            }
+        });
+        return new Promise(function(resolve, reject) {
+            var req = http.request({
+                host: "127.0.0.1",
+                port: boundPort,
+                path: "/_node-red-temporal/http/sync/n1/n2",
+                method: "POST",
+                headers: { "Content-Type": "application/json" }
+            }, function(res) {
+                res.on("data", function() {});
+                res.on("end", function() { resolve(res); });
+            });
+            req.on("error", reject);
+            req.end(JSON.stringify({}));
+        }).then(function(res) {
+            res.statusCode.should.equal(200);
+            res.headers.should.have.property("x-keep", "yes");
+            // Node's http module computes its own real `connection`/
+            // `content-length` values for the wire response (which may or
+            // may not even be present depending on keep-alive/chunking),
+            // so we only assert our deliberately-bogus stripped VALUES
+            // never leaked through anywhere in the response headers.
+            JSON.stringify(res.headers).should.not.containEql("should-be-stripped");
+            JSON.stringify(res.headers).should.not.containEql("9999");
+        });
+    });
+
+    it("responds 500 with the ApplicationFailure's type for FLOW_RESULT_MISSING", function() {
+        var err = new Error("flow result node n2 was never reached");
+        err.type = "FLOW_RESULT_MISSING";
+        resultStub.rejects(err);
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(500);
+            res.body.should.have.property("error");
+            res.body.should.have.property("type", "FLOW_RESULT_MISSING");
+        });
+    });
+
+    it("responds 500 with the ApplicationFailure's type for FLOW_RESULT_AMBIGUOUS wrapped in a WorkflowFailedError-shaped cause", function() {
+        var cause = new Error("more than one delivery");
+        cause.type = "FLOW_RESULT_AMBIGUOUS";
+        var wrapped = new Error("Workflow execution failed");
+        wrapped.cause = cause;
+        resultStub.rejects(wrapped);
+        return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+            res.statusCode.should.equal(500);
+            res.body.should.have.property("type", "FLOW_RESULT_AMBIGUOUS");
+        });
+    });
+
+    it("bounds the wait by deps.syncTimeoutMs and responds 504 with workflowId when the Workflow is still running", function() {
+        // Close the `beforeEach`-created server first (see the identical
+        // note on the next test) - `setup()` below binds a second server on
+        // a fresh ephemeral port, and leaving the first open leaks a
+        // listening socket that hangs the whole mocha process afterwards.
+        return server.close().then(function() {
+            return setup({ syncTimeoutMs: 30 });
+        }).then(function() {
+            // resultStub never resolves (default) - the race must still settle via the timer
+            var start = Date.now();
+            return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}).then(function(res) {
+                (Date.now() - start).should.be.below(2000);
+                res.statusCode.should.equal(504);
+                res.body.should.have.property("workflowId").which.is.a.String();
+            });
+        });
+    });
+
+    it("never calls handle.cancel()/terminate() when the bounded wait times out", function() {
+        var cancelStub = sinon.stub();
+        var terminateStub = sinon.stub();
+        // Close the `beforeEach`-created server first: `setup()` below
+        // creates and listens a SECOND server bound to a fresh ephemeral
+        // port, and `afterEach` only closes whichever server is current -
+        // leaving the first one open would leak an open listening socket
+        // and hang the whole mocha process after the suite finishes.
+        return server.close().then(function() {
+            return setup({ syncTimeoutMs: 30 });
+        }).then(function() {
+            getHandleStub.returns({ result: resultStub, cancel: cancelStub, terminate: terminateStub });
+            return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {});
+        }).then(function(res) {
+            res.statusCode.should.equal(504);
+            cancelStub.called.should.be.false();
+            terminateStub.called.should.be.false();
+        });
+    });
+
+    it("waits on the same Workflow's result for a reused (duplicate-start) sync request", function() {
+        var dupResultStub = sinon.stub().resolves({ flowVersion: "v1", lastNode: "n2", resultMsg: { payload: { a: 1 } } });
+        var dupGetHandleStub = sinon.stub().returns({ result: dupResultStub });
+        clientStub.restore();
+        clientStub = stubClientModule(
+            sinon.stub().rejects(new WorkflowExecutionAlreadyStartedError("already started", "some-id", "executeFlow")),
+            dupGetHandleStub
+        );
+        return server.close().then(function() {
+            server = httpIngress.createHttpIngressServer({
+                getClient: function() { return Promise.resolve(clientStub.fakeClient); },
+                getNode: sinon.stub().returns({ id: "n1" }),
+                currentFlowInfo: sinon.stub().resolves({ graph: {}, nodeMeta: {}, flowVersion: "v1" }),
+                temporalConfig: temporalConfig,
+                port: 0
+            });
+            return server.listen();
+        }).then(function(bound) {
+            boundPort = bound.port;
+            return postJson(boundPort, "/_node-red-temporal/http/sync/n1/n2", {}, { "Idempotency-Key": "dup-key" });
+        }).then(function(res) {
+            res.statusCode.should.equal(200);
+            res.body.should.eql({ a: 1 });
+            dupResultStub.calledOnce.should.be.true();
         });
     });
 });
