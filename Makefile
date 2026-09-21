@@ -159,9 +159,20 @@ run: build
 		sleep 2; \
 	fi
 	@echo ""
-	@echo "Editor A (design time, press Deploy) : http://localhost:$(EDITOR_PORT)"
-	@echo "Runner B admin API                   : http://$(ADMIN_HOST):$(ADMIN_PORT)"
-	@echo "Temporal Web UI                       : http://localhost:8233"
+	@for entry in \
+		"Editor A (design time, press Deploy)|http://localhost:$(EDITOR_PORT)" \
+		"Runner B admin API                  |http://$(ADMIN_HOST):$(ADMIN_PORT)" \
+		"Temporal Web UI                     |http://localhost:8233" \
+	; do \
+		label="$${entry%%|*}"; \
+		url="$${entry#*|}"; \
+		if curl -s -o /dev/null --max-time 2 "$$url"; then \
+			mark="✅"; \
+		else \
+			mark="❌"; \
+		fi; \
+		echo "$$mark $$label : $$url"; \
+	done
 	@echo "Editor log                           : $(EDITOR_LOG)"
 	@echo "Runner log                           : $(RUNNER_LOG)"
 	@echo "Next: open the editor, build/edit a flow, press Deploy."
