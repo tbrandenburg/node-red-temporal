@@ -216,6 +216,12 @@ See [COMPATIBILITY.md](packages/node_modules/@tbrandenburg/node-red-temporal-run
   unsupported. Those nodes depend on live `req`/`res` connection objects
   that cannot cross Temporal's durable message boundary or survive a worker
   restart.
+- ✅ **A separate, opt-in HTTP ingress/egress transport** (`--http-ingress-port`,
+  issue #58) can start a flow's Workflow (and optionally wait for a
+  designated result node) over HTTP - a thin transport around
+  `executeFlow`, not stock `HTTP In`/`HTTP Response` node support. See the
+  [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#http-ingress-issue-58)
+  for the full endpoint contracts, idempotency, and durability caveats.
 
 The early alpha targets message-driven flows with serializable messages.
 Durable HTTP ingress may be designed separately later rather than pretending
