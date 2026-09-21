@@ -202,15 +202,16 @@ accepting the diff. All new code lives in a separate package that depends on ups
 - Fan-in (two branches converging on the same downstream node) and finite loops now work (issues #24,
   #31, #34) — an unbounded/misconfigured loop still fails fast via the `maxNodeExecutions` guard
   rather than draining forever.
-- **Editor A is not truly design-time-only (issue #39 follow-up).** `runtimeState: { enabled: true }`
-  in A's `settings.js` only gates the Admin API/UI start-stop *controls*; it does not stop
-  `runtimeFlowState` (defaults to `'start'`), so A boots and runs its own local copy of every deployed
-  flow alongside B's. `remoteRuntimeAdminProxy.js` forwards only a small allow-list to B —
-  `POST /inject/:id`, `POST /debug[/:id]/enable|disable`, `GET|DELETE /context/...` — everything else,
-  including a Dashboard/`ui-chat` node's Socket.IO data-plane traffic, is served directly by whichever
-  process physically received the request (A on `:1880`, bypassing Capture/Temporal entirely; B on its
-  admin port, wired through Temporal). To see Temporal activity for such nodes, hit B's own route
-  (e.g. its `/dashboard/...`), not A's `:1880`.
+- **Editor A is now genuinely design-time-only (issue #73, fixed).** A's generated `settings.js` sets
+  `runtimeFlowState: "stop"`, which is the setting `@node-red/runtime` actually checks before starting
+  a flow (`runtimeState: { enabled: false, ui: false }` alone only gated the Admin API/UI start-stop
+  *controls* and never stopped execution by itself). A therefore no longer boots or runs its own local
+  copy of any deployed flow — B remains the sole live runtime. `remoteRuntimeAdminProxy.js` still
+  forwards only a small allow-list to B — `POST /inject/:id`, `POST /debug[/:id]/enable|disable`,
+  `GET|DELETE /context/...` — everything else, including a Dashboard/`ui-chat` node's Socket.IO
+  data-plane traffic, is served directly by whichever process physically received the request (A on
+  `:1880`; B on its admin port, wired through Temporal). To see Temporal activity for such nodes, hit
+  B's own route (e.g. its `/dashboard/...`), not A's `:1880`.
 - **Runner B fuses three roles in one process** (today's default `createCombinedWorker`): a live
   Node-RED runtime (from `bootstrap()`), a Temporal Activity Worker polling the Activity Task Queue,
   and (in combined mode) the Workflow Worker. It is also the only process with `Capture.install()`

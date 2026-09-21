@@ -37,7 +37,8 @@ describe("@tbrandenburg/node-red-temporal-runtime/run/generate-editor-settings",
 
         var settings = require(settingsPath);
         settings.uiPort.should.equal("18800");
-        settings.runtimeState.should.eql({ enabled: true });
+        settings.runtimeFlowState.should.equal("stop");
+        settings.runtimeState.should.eql({ enabled: false, ui: false });
         should(settings.credentialSecret).be.a.String();
         settings.credentialSecret.length.should.be.above(0);
         should(settings.storageModule).be.an.Object();
