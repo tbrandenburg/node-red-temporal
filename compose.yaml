@@ -110,7 +110,14 @@ services:
       TEMPORAL_NAMESPACE: default
     ports:
       - "1880:1880"
-      - "1881:1881"
+      # loopback-only (issue #79 quick fix): runner B's admin API (1881)
+      # binds to 127.0.0.1 *inside* the container by default (ADMIN_HOST,
+      # Makefile), so this publish only ever matters when explicitly
+      # unblocked via `make docker-run-expose-runner` (ADMIN_HOST=0.0.0.0).
+      # Restricting the publish to the host's own loopback keeps that
+      # unauthenticated admin API + runtime routes off the LAN even then -
+      # see `docker-run-expose-runner`'s docblock for the full rationale.
+      - "127.0.0.1:1881:1881"
     depends_on:
       temporal:
         condition: service_healthy
