@@ -107,6 +107,11 @@ release:
 ## bootstraps automatically instead of starting broken background processes.
 run: build
 	@mkdir -p $(PID_DIR) $(EDITOR_USERDIR) $(RUNNER_USERDIR)
+	@command -v temporal >/dev/null 2>&1 || { \
+		echo "error: 'temporal' CLI not found on PATH."; \
+		echo "Install it: https://docs.temporal.io/cli (e.g. curl -sSf https://temporal.download/cli.sh | sh)"; \
+		exit 1; \
+	}
 	@if ss -tln 2>/dev/null | grep -q ':7233 '; then \
 		echo "Temporal already listening on :7233 - reusing it"; \
 	else \
@@ -114,6 +119,12 @@ run: build
 		setsid temporal server start-dev --db-filename $(TEMPORAL_DB) --ip 0.0.0.0 \
 			> $(TEMPORAL_LOG) 2>&1 < /dev/null & echo $$! > $(TEMPORAL_PID); \
 		sleep 3; \
+		kill -0 "$$(cat $(TEMPORAL_PID))" 2>/dev/null || { \
+			echo "error: Temporal dev server failed to start. Last lines of $(TEMPORAL_LOG):"; \
+			tail -n 5 $(TEMPORAL_LOG); \
+			echo "Common causes: port 7233 already in use by another process, or a corrupt --db-filename ($(TEMPORAL_DB))."; \
+			exit 1; \
+		}; \
 	fi
 	@if [ -n "$(FLOW)" ]; then \
 		seed_flow="$(FLOW)"; \
@@ -130,6 +141,12 @@ run: build
 			--user-dir $(RUNNER_USERDIR) \
 			> $(RUNNER_LOG) 2>&1 < /dev/null & echo $$! > $(RUNNER_PID); \
 		sleep 2; \
+		kill -0 "$$(cat $(RUNNER_PID))" 2>/dev/null || { \
+			echo "error: Runner B failed to start. Last lines of $(RUNNER_LOG):"; \
+			tail -n 5 $(RUNNER_LOG); \
+			echo "Common causes: port $(ADMIN_PORT) already in use, Temporal dev server not reachable, or invalid --flow JSON ($$seed_flow)."; \
+			exit 1; \
+		}; \
 	fi
 	@node $(SETTINGS_GEN) --user-dir $(EDITOR_USERDIR) \
 		--target http://$(ADMIN_HOST):$(ADMIN_PORT) --port $(EDITOR_PORT)
