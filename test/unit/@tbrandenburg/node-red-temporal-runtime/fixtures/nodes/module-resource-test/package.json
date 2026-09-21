@@ -1,0 +1,10 @@
+{
+    "name": "node-red-temporal-test-module-resource",
+    "version": "0.0.1",
+    "description": "Test-only Node-RED node package (issue #74): ships a resources/ directory so Node-RED's real registry (@node-red/registry's localfilesystem loader) resolves it through getModuleResource, proving the standard /resources/<module>/<file> route works on the headless runner.",
+    "node-red": {
+        "nodes": {
+            "test-nodes": "index.js"
+        }
+    }
+}
