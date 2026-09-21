@@ -1019,3 +1019,82 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #58 M1: 
             });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #75: httpBridge response aggregation", function() {
+    it("httpBridge not set: httpResponse is never even considered, even if an Activity result carries one", function() {
+        var graph = { n1: [[]] };
+        var executeNode = function() {
+            return Promise.resolve({ sends: [], httpResponse: { statusCode: 200, headers: {}, body: "x" } });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {} })
+            .then(function(result) {
+                result.should.not.have.property("httpResponse");
+            });
+    });
+
+    it("httpBridge set, zero HTTP Response deliveries: throws nonRetryable HTTP_RESPONSE_MISSING", function() {
+        var graph = { n1: [["n2"]], n2: [[]] };
+        var executeNode = function() {
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridge: true })
+            .then(function() {
+                throw new Error("expected runFlow to throw");
+            }, function(err) {
+                err.type.should.equal("HTTP_RESPONSE_MISSING");
+                err.nonRetryable.should.equal(true);
+            });
+    });
+
+    it("httpBridge set, exactly one HTTP Response delivery: resolves with output.httpResponse", function() {
+        var graph = { n1: [["resp"]], resp: [[]] };
+        var executeNode = function(input) {
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "resp", msg: {} }] });
+            }
+            if (input.nodeId === "resp") {
+                return Promise.resolve({ sends: [], httpResponse: { statusCode: 201, headers: { "x-test": "1" }, body: { ok: true } } });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridge: true })
+            .then(function(result) {
+                result.httpResponse.should.eql({ statusCode: 201, headers: { "x-test": "1" }, body: { ok: true } });
+            });
+    });
+
+    it("httpBridge set, two HTTP Response deliveries (conditional branches both fire): throws nonRetryable HTTP_RESPONSE_AMBIGUOUS", function() {
+        var graph = { n1: [["respA", "respB"]], respA: [[]], respB: [[]] };
+        var executeNode = function(input) {
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [
+                    { port: 0, destinationId: "respA", msg: {} },
+                    { port: 0, destinationId: "respB", msg: {} }
+                ] });
+            }
+            return Promise.resolve({ sends: [], httpResponse: { statusCode: 200, headers: {}, body: input.nodeId } });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridge: true })
+            .then(function() {
+                throw new Error("expected runFlow to throw");
+            }, function(err) {
+                err.type.should.equal("HTTP_RESPONSE_AMBIGUOUS");
+                err.nonRetryable.should.equal(true);
+            });
+    });
+
+    it("httpBridge set: whichever HTTP Response node actually executes wins, no static resultNodeId required", function() {
+        var graph = { n1: [["respB"]], respB: [[]] };
+        var executeNode = function(input) {
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "respB", msg: {} }] });
+            }
+            return Promise.resolve({ sends: [], httpResponse: { statusCode: 404, headers: {}, body: "not found" } });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridge: true })
+            .then(function(result) {
+                result.httpResponse.body.should.equal("not found");
+            });
+    });
+});
+

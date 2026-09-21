@@ -962,3 +962,163 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #58 M6 HTTP
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #75: createIngressDispatcher (HTTP In classification)", function() {
+    var worker = require(WORKER_MODULE_PATH);
+
+    it("dispatches a stock \"http in\" source to the HTTP-bridge handler", function() {
+        var genericSpy = sinon.stub().resolves();
+        var bridgeSpy = sinon.stub().resolves();
+        var getNode = function(id) { return id === "n1" ? { type: "http in" } : { type: "inject" }; };
+        var dispatcher = worker.createIngressDispatcher(getNode, genericSpy, bridgeSpy);
+
+        return dispatcher({ sourceNodeId: "n1", msg: {}, sends: [] }).then(function() {
+            bridgeSpy.calledOnce.should.equal(true);
+            genericSpy.called.should.equal(false);
+        });
+    });
+
+    it("dispatches an ordinary autonomous source (e.g. inject) to the generic handler unchanged", function() {
+        var genericSpy = sinon.stub().resolves();
+        var bridgeSpy = sinon.stub().resolves();
+        var getNode = function() { return { type: "inject" }; };
+        var dispatcher = worker.createIngressDispatcher(getNode, genericSpy, bridgeSpy);
+
+        return dispatcher({ sourceNodeId: "n1", msg: {}, sends: [] }).then(function() {
+            genericSpy.calledOnce.should.equal(true);
+            bridgeSpy.called.should.equal(false);
+        });
+    });
+
+    it("dispatches to the generic handler when the source node cannot be found at all", function() {
+        var genericSpy = sinon.stub().resolves();
+        var bridgeSpy = sinon.stub().resolves();
+        var dispatcher = worker.createIngressDispatcher(function() { return undefined; }, genericSpy, bridgeSpy);
+
+        return dispatcher({ sourceNodeId: "unknown", msg: {}, sends: [] }).then(function() {
+            genericSpy.calledOnce.should.equal(true);
+            bridgeSpy.called.should.equal(false);
+        });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #75: createOnHttpBridgeIngress (stock HTTP In/Response transport bridge)", function() {
+    var worker = require(WORKER_MODULE_PATH);
+    var flowInfo = { graph: {}, nodeMeta: {}, flowVersion: "v1" };
+
+    function fakeRes() {
+        return {
+            headersSent: false,
+            writableEnded: false,
+            writeHead(statusCode, headers) { this.statusCode = statusCode; this.headers = headers; this.headersSent = true; },
+            end(body) { this.body = body; this.writableEnded = true; }
+        };
+    }
+
+    function fakeReq() {
+        var listeners = {};
+        return {
+            on(event, cb) { listeners[event] = cb; },
+            trigger(event) { if (listeners[event]) { listeners[event](); } }
+        };
+    }
+
+    function ingressWith(res, req) {
+        return {
+            sourceNodeId: "httpIn1",
+            msg: { req: req, res: { _res: res }, payload: {} },
+            sends: [{ port: 0, destinationId: "n2", msg: { req: req, res: { _res: res }, payload: {} } }]
+        };
+    }
+
+    it("starts executeFlow with httpBridge:true and a snapshot-only initial (no live req/res)", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var startStub = sinon.stub().resolves();
+        var handleResultStub = sinon.stub().resolves({ httpResponse: { statusCode: 200, headers: {}, body: "ok" } });
+        var client = { workflow: { start: startStub, getHandle: sinon.stub().returns({ result: handleResultStub }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "wf-q", activityTaskQueue: "act-q" });
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            startStub.calledOnce.should.equal(true);
+            var args = startStub.firstCall.args[1];
+            args.args[0].httpBridge.should.equal(true);
+            args.args[0].initial.length.should.equal(1);
+            args.args[0].initial[0].nodeId.should.equal("n2");
+            args.args[0].initial[0].msg.should.not.have.property("res");
+            JSON.stringify(args.args[0].initial).should.be.a.String();
+        });
+    });
+
+    it("applies the resolved httpResponse descriptor onto the real live response", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().resolves({ httpResponse: { statusCode: 201, headers: { "x-test": "1" }, body: "created", cookies: [] } }) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" });
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(201);
+            res.headers["x-test"].should.equal("1");
+            res.body.toString().should.equal("created");
+        });
+    });
+
+    it("workflow start failure -> 503, never throws", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var errorSpy = sinon.stub(console, "error");
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.reject(new Error("temporal unreachable")); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" });
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(503);
+            errorSpy.called.should.equal(true);
+        }).finally(function() {
+            errorSpy.restore();
+        });
+    });
+
+    it("workflow/application failure -> 500, never throws, workflow is not cancelled/terminated", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var errorSpy = sinon.stub(console, "error");
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().rejects(new Error("HTTP_RESPONSE_MISSING")) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" });
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(500);
+            errorSpy.called.should.equal(true);
+        }).finally(function() {
+            errorSpy.restore();
+        });
+    });
+
+    it("bounded timeout -> 504, the Workflow keeps running (handle.result() is never cancelled, just left pending)", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var neverSettles = new Promise(function() {}); // Workflow "still running"
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, 10);
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(504);
+        });
+    });
+
+    it("client disconnect before the Workflow settles: no write to the dead response, Workflow left running", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var resolveResult;
+        var pending = new Promise(function(resolve) { resolveResult = resolve; });
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(pending) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" });
+
+        var promise = onIngress(ingressWith(res, req));
+        req.trigger("close");
+        resolveResult({ httpResponse: { statusCode: 200, headers: {}, body: "late" } });
+
+        return promise.then(function() {
+            should.not.exist(res.statusCode);
+            res.headersSent.should.equal(false);
+        });
+    });
+});

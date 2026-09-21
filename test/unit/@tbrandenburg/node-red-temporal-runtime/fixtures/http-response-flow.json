@@ -1,0 +1,5 @@
+[
+    {"id": "tab1", "type": "tab", "label": "HTTP Response Flow"},
+    {"id": "r1", "type": "http response", "z": "tab1", "name": "resp", "statusCode": "", "headers": {}, "wires": []},
+    {"id": "r2", "type": "http response", "z": "tab1", "name": "resp-fixed-status", "statusCode": "418", "headers": {"x-configured": "yes"}, "wires": []}
+]
