@@ -271,7 +271,7 @@ export USER_GID := $(shell id -g)
 # untouched).
 TEMPORAL_NAMESPACE ?= default
 
-.PHONY: docker-run docker-run-external docker-stop docker-status docker-shell docker-logs
+.PHONY: docker-run docker-run-external docker-run-expose-runner docker-stop docker-status docker-shell docker-logs
 
 ## docker-run: start the local Docker stack and boot editor A + runner B
 ## inside the `dev` container via the existing `make run` lifecycle.
@@ -300,6 +300,54 @@ docker-run:
 	@echo ""
 	@echo "Node-RED editor : http://localhost:$(EDITOR_PORT)"
 	@echo "Temporal UI     : http://localhost:8233"
+
+## docker-run-expose-runner: like `docker-run`, but starts runner B with
+## ADMIN_HOST=0.0.0.0 (Makefile default is 127.0.0.1 - loopback-only INSIDE
+## the container, unreachable via Docker's port publish; see the ADMIN_HOST
+## decision comment further down this file). This is a quick, explicit
+## unblocker (issue #79) for iterating on stock HTTP-triggered flows
+## (e.g. `/summarize`, `/customer-request`) without a `docker compose exec`
+## wrapper on every curl - NOT a change to `docker-run`'s normal, safer
+## default.
+##
+## compose.yaml publishes 1881 as `127.0.0.1:1881:1881` (host-loopback-only,
+## never the LAN), so after this target:
+##   curl http://localhost:1881/summarize
+## works directly from the host.
+##
+## Explicit, opt-in, and deliberately narrow: runner B's admin API has NO
+## authentication and also carries the runtime's own HTTP-triggered routes
+## on the SAME port - anything reachable at localhost:1881 can redeploy
+## flows, read/write context, etc. Only use this on a trusted single-user
+## host, only for as long as you need it, and prefer `make docker-stop` (or
+## re-running plain `make docker-run`, which restarts runner B back on
+## ADMIN_HOST=127.0.0.1) once you're done.
+##
+## Long-term fix tracked as issue #79 -> #80 (split runner B into a private
+## control-plane port and a proper, separately-exposable runtime data-plane
+## port) - this target is meant to be deleted once that lands.
+docker-run-expose-runner:
+	@$(COMPOSE) up -d --build postgres temporal temporal-ui dev
+	@echo "Waiting for temporal and dev services..."
+	@i=0; \
+	while [ $$i -lt 60 ]; do \
+		temporal_health=$$($(COMPOSE) ps --format json temporal 2>/dev/null | grep -o '"Health":"[a-z]*"' | head -1); \
+		dev_state=$$($(COMPOSE) ps --format json dev 2>/dev/null | grep -o '"State":"[a-z]*"' | head -1); \
+		if echo "$$temporal_health" | grep -q healthy && echo "$$dev_state" | grep -q running; then \
+			echo "temporal healthy, dev running"; \
+			break; \
+		fi; \
+		i=$$((i+1)); \
+		sleep 2; \
+	done
+	@$(COMPOSE) exec -T -u root dev chown -R "$(USER_UID):$(USER_GID)" /workspace/node_modules
+	@$(COMPOSE) exec -T dev make stop
+	@$(COMPOSE) exec -T dev make run ADMIN_HOST=0.0.0.0
+	@echo ""
+	@echo "⚠️  Runner B admin API + runtime routes exposed on host loopback only (issue #79 quick fix)"
+	@echo "Node-RED editor      : http://localhost:$(EDITOR_PORT)"
+	@echo "Runner B (loopback)  : http://localhost:$(ADMIN_PORT)"
+	@echo "Temporal UI          : http://localhost:8233"
 
 ## docker-run-external: start ONLY the `dev` service (never postgres/temporal/
 ## temporal-ui) and boot editor A + runner B inside it against an externally
