@@ -1,0 +1,10 @@
+{
+    "name": "@node-red-temporal-test/module-resource-scoped",
+    "version": "0.0.1",
+    "description": "Test-only SCOPED Node-RED node package (issue #74): proves the module-resource route's regex handles `@scope/package-name` module names, not just unscoped ones.",
+    "node-red": {
+        "nodes": {
+            "test-nodes": "index.js"
+        }
+    }
+}
