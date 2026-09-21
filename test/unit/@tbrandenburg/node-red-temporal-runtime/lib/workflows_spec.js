@@ -884,3 +884,138 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #47: nod
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #58 M1: resultNodeId explicit result marker", function() {
+    it("no resultNodeId: return shape unchanged, no resultMsg key at all", function() {
+        var graph = { n1: [["n2"]], n2: [[]] };
+        var executeNode = function(input) {
+            return Promise.resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: { payload: 2 } }] : [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: { payload: 1 } })
+            .then(function(result) {
+                result.should.eql({ flowVersion: "v1", lastNode: "n2" });
+                result.should.not.have.property("resultMsg");
+            });
+    });
+
+    it("linear flow reaches the marker once: returns its delivered msg as resultMsg", function() {
+        var graph = { n1: [["n2"]], n2: [[]] };
+        var executeNode = function(input) {
+            return Promise.resolve({ sends: input.nodeId === "n1" ? [{ port: 0, msg: { payload: 42 } }] : [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: { payload: 1 }, resultNodeId: "n2" })
+            .then(function(result) {
+                result.resultMsg.should.eql({ payload: 42 });
+                result.lastNode.should.equal("n2");
+            });
+    });
+
+    it("other branches may exist; the configured marker still wins regardless of traversal order", function() {
+        var graph = { n1: [["n2", "n3"]], n2: [[]], n3: [[]] };
+        var executeNode = function(input) {
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: { from: "n1" } }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, resultNodeId: "n3" })
+            .then(function(result) {
+                result.resultMsg.should.eql({ from: "n1" });
+            });
+    });
+
+    it("marker never reached: throws nonRetryable FLOW_RESULT_MISSING", function() {
+        var graph = { n1: [["n2"]], n2: [[]] };
+        var executeNode = function() {
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, resultNodeId: "never-reached" })
+            .then(function() {
+                throw new Error("expected runFlow to throw");
+            }, function(err) {
+                err.type.should.equal("FLOW_RESULT_MISSING");
+                err.nonRetryable.should.equal(true);
+            });
+    });
+
+    it("marker receives two messages across DIFFERENT waves: throws nonRetryable FLOW_RESULT_AMBIGUOUS", function() {
+        // n1 and n2 both independently reach marker, but in two separate
+        // waves (n1 -> marker in wave 2, then marker -> n2 -> marker in
+        // wave 4) - exercises the cross-wave running-total accumulation,
+        // not just the same-wave pre-scan.
+        var graph = {
+            n1: [["marker"]],
+            marker: [["n2"]],
+            n2: [["marker"]]
+        };
+        var visits = { marker: 0 };
+        var executeNode = function(input) {
+            if (input.nodeId === "marker") {
+                visits.marker++;
+                // Only the FIRST visit fans out to n2, so marker is reached
+                // exactly twice total (no infinite loop).
+                return Promise.resolve({ sends: visits.marker === 1 ? [{ port: 0, msg: { visit: 1 } }] : [] });
+            }
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: { seq: 1 } }] });
+            }
+            if (input.nodeId === "n2") {
+                return Promise.resolve({ sends: [{ port: 0, msg: { seq: 2 } }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, resultNodeId: "marker" })
+            .then(function() {
+                throw new Error("expected runFlow to throw");
+            }, function(err) {
+                err.type.should.equal("FLOW_RESULT_AMBIGUOUS");
+                err.nonRetryable.should.equal(true);
+            });
+    });
+
+    it("fan-out wave with two marker deliveries in the SAME wave is rejected deterministically before dispatch", function() {
+        var graph = { n1: [["marker", "marker2"]], marker: [[]], marker2: [[]] };
+        var dispatched = [];
+        var executeNode = function(input) {
+            dispatched.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [
+                    { port: 0, destinationId: "marker", msg: { a: 1 } },
+                    { port: 0, destinationId: "marker", msg: { a: 2 } }
+                ] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, resultNodeId: "marker" })
+            .then(function() {
+                throw new Error("expected runFlow to throw");
+            }, function(err) {
+                err.type.should.equal("FLOW_RESULT_AMBIGUOUS");
+                err.nonRetryable.should.equal(true);
+                // Only n1 (wave 1) was dispatched - the wave containing both
+                // marker deliveries was rejected BEFORE either was dispatched.
+                dispatched.should.eql(["n1"]);
+            });
+    });
+
+    it("Workflow continues normal routing after the one marker delivery (downstream sends from the marker node still process)", function() {
+        var graph = { n1: [["marker"]], marker: [["n3"]], n3: [[]] };
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input.nodeId);
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, msg: { payload: 1 } }] });
+            }
+            if (input.nodeId === "marker") {
+                return Promise.resolve({ sends: [{ port: 0, msg: { payload: 2 } }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, resultNodeId: "marker" })
+            .then(function(result) {
+                calls.should.eql(["n1", "marker", "n3"]);
+                result.resultMsg.should.eql({ payload: 1 });
+                result.lastNode.should.equal("n3");
+            });
+    });
+});
