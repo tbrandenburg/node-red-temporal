@@ -259,6 +259,13 @@ demo-run demo-start demo-status demo-stop:
 
 COMPOSE := docker compose
 
+# Passed to compose.yaml's `dev` service build args so the container runs as
+# a user matching the host UID/GID instead of root - anything it writes to
+# the bind-mounted repo (npm install/build, Node-RED userDir state) then
+# comes back host-owned, not root-owned (issue #52 follow-up).
+export USER_UID := $(shell id -u)
+export USER_GID := $(shell id -g)
+
 # Default namespace for `make docker-run-external` when the caller doesn't
 # set TEMPORAL_NAMESPACE explicitly (?= leaves an env/CLI-supplied value
 # untouched).

@@ -94,6 +94,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        # Matches the container's user to the host UID/GID (default
+        # 1000/1000) so bind-mounted writes come back host-owned, not
+        # root-owned (issue #52 follow-up). The Makefile's docker-run
+        # targets export these from `id -u`/`id -g` automatically.
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
     working_dir: /workspace
     volumes:
       - .:/workspace

@@ -18,13 +18,31 @@ RUN apt-get update \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Run as a non-root user matching the host UID/GID (default 1000/1000) so
+# anything the container writes to the bind-mounted repo (npm install/build,
+# Node-RED userDir state) comes back host-owned instead of root-owned - see
+# issue #52 follow-up. The base node:22-bookworm image already ships a
+# `node` user at uid/gid 1000/1000, so the common case just renames/reuses
+# it instead of creating a colliding user.
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN if getent passwd "${USER_UID}" >/dev/null; then \
+        existing="$(getent passwd "${USER_UID}" | cut -d: -f1)"; \
+        [ "${existing}" = "node" ] || usermod -l devuser -d /home/devuser -m "${existing}"; \
+    else \
+        groupadd --gid "${USER_GID}" devuser 2>/dev/null || true; \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" --create-home --shell /bin/bash devuser; \
+    fi
+
 WORKDIR /workspace
+RUN chown "${USER_UID}:${USER_GID}" /workspace
+
+USER ${USER_UID}:${USER_GID}
 
 # Install dependencies first so this layer is cached unless the lockfile
 # or manifest changes.
-COPY package.json package-lock.json ./
+COPY --chown=${USER_UID}:${USER_GID} package.json package-lock.json ./
 RUN npm ci
-
-COPY . .
+COPY --chown=${USER_UID}:${USER_GID} . .
 
 CMD ["bash"]
