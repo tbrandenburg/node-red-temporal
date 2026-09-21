@@ -45,7 +45,34 @@ EDITOR_PID     := $(PID_DIR)/editor.pid
 EDITOR_LOG     := $(PID_DIR)/editor.log
 EMPTY_FLOW     := $(PID_DIR)/empty-flows.json
 
-.PHONY: publish release run start status stop demo-run demo-start demo-status demo-stop
+.PHONY: publish release run start status stop clean demo-run demo-start demo-status demo-stop
+
+# Fresh-clone bootstrap: `make run` depends on `build`, which depends on
+# `install`, so a brand-new checkout self-heals instead of silently starting
+# broken background processes (no node_modules / no editor assets yet).
+# File-stamp targets (not phony) so both steps are no-ops once satisfied and
+# re-run automatically when their real inputs change.
+NODE_MODULES_STAMP := node_modules/.install-stamp
+BUILD_STAMP        := packages/node_modules/@node-red/editor-client/public/red/red.min.js
+
+## install: install root + workspace dependencies (fresh clone bootstrap)
+install: $(NODE_MODULES_STAMP)
+
+$(NODE_MODULES_STAMP): package.json package-lock.json
+	npm install
+	@touch $(NODE_MODULES_STAMP)
+
+## build: build the editor's static HTML/JS/CSS assets (gitignored output)
+build: $(BUILD_STAMP)
+
+$(BUILD_STAMP): $(NODE_MODULES_STAMP)
+	npm run build
+
+## clean: remove build output so the next `make run`/`make build` redoes it
+## (does not touch node_modules - use `install` staleness tracking for that)
+clean:
+	rm -f $(NODE_MODULES_STAMP)
+	rm -rf packages/node_modules/@node-red/editor-client/public/red
 
 ## publish: publish only the Temporal runtime package to npm
 publish:
@@ -76,7 +103,9 @@ release:
 ## Usage: make run [FLOW=path/to/flows.json]
 ##   FLOW= seeds runner B's INITIAL flow on first boot only; omit it to boot
 ##   B with an empty flow and create everything from editor A's Deploy button.
-run:
+## Depends on `build` (which depends on `install`) so a fresh clone
+## bootstraps automatically instead of starting broken background processes.
+run: build
 	@mkdir -p $(PID_DIR) $(EDITOR_USERDIR) $(RUNNER_USERDIR)
 	@if ss -tln 2>/dev/null | grep -q ':7233 '; then \
 		echo "Temporal already listening on :7233 - reusing it"; \
