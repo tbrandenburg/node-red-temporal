@@ -289,6 +289,13 @@ docker-run:
 		i=$$((i+1)); \
 		sleep 2; \
 	done
+	@# Self-healing fix for a stale `node_modules` named volume created by an
+	@# older root-running image (before this project's dev container switched
+	@# to a non-root USER_UID/USER_GID) - such a volume stays root-owned
+	@# across rebuilds since Docker only seeds a *brand new* volume's
+	@# ownership from the image. Idempotent/cheap: a no-op once the volume is
+	@# already owned correctly.
+	@$(COMPOSE) exec -T -u root dev chown -R "$(USER_UID):$(USER_GID)" /workspace/node_modules
 	@$(COMPOSE) exec -T dev make run
 	@echo ""
 	@echo "Node-RED editor : http://localhost:$(EDITOR_PORT)"
@@ -326,6 +333,9 @@ docker-run-external:
 		i=$$((i+1)); \
 		sleep 2; \
 	done
+	@# Self-healing fix for a stale `node_modules` named volume created by an
+	@# older root-running image - see docker-run's matching step for details.
+	@$(COMPOSE) exec -T -u root dev chown -R "$(USER_UID):$(USER_GID)" /workspace/node_modules
 	@$(COMPOSE) exec -T \
 		-e TEMPORAL_ADDRESS="$(TEMPORAL_ADDRESS)" \
 		-e TEMPORAL_NAMESPACE="$(TEMPORAL_NAMESPACE)" \
