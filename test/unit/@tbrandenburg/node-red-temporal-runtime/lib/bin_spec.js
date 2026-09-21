@@ -435,3 +435,139 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #58 --http-ingress-port/--http-ingress-host/--http-sync-timeout-ms", function() {
+    var PORT_ENV = "NODE_RED_TEMPORAL_HTTP_INGRESS_PORT";
+    var HOST_ENV = "NODE_RED_TEMPORAL_HTTP_INGRESS_HOST";
+    var TIMEOUT_ENV = "NODE_RED_TEMPORAL_HTTP_SYNC_TIMEOUT_MS";
+    var originalPortEnv, originalHostEnv, originalTimeoutEnv;
+
+    beforeEach(function() {
+        originalPortEnv = process.env[PORT_ENV];
+        originalHostEnv = process.env[HOST_ENV];
+        originalTimeoutEnv = process.env[TIMEOUT_ENV];
+        delete process.env[PORT_ENV];
+        delete process.env[HOST_ENV];
+        delete process.env[TIMEOUT_ENV];
+    });
+
+    afterEach(function() {
+        if (originalPortEnv === undefined) { delete process.env[PORT_ENV]; } else { process.env[PORT_ENV] = originalPortEnv; }
+        if (originalHostEnv === undefined) { delete process.env[HOST_ENV]; } else { process.env[HOST_ENV] = originalHostEnv; }
+        if (originalTimeoutEnv === undefined) { delete process.env[TIMEOUT_ENV]; } else { process.env[TIMEOUT_ENV] = originalTimeoutEnv; }
+    });
+
+    it("httpIngressOptionsFrom returns undefined when neither --http-ingress-port nor the env var is given (fully opt-in)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        should(bin.httpIngressOptionsFrom({})).be.undefined();
+    });
+
+    it("httpIngressOptionsFrom parses --http-ingress-port (including 0) as a non-negative integer", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.httpIngressOptionsFrom({ "http-ingress-port": "0" }).should.eql({ port: 0, host: undefined, syncTimeoutMs: undefined });
+        bin.httpIngressOptionsFrom({ "http-ingress-port": "8080" }).port.should.equal(8080);
+    });
+
+    it("httpIngressOptionsFrom falls back to env vars when flags are not given", function() {
+        process.env[PORT_ENV] = "9090";
+        process.env[HOST_ENV] = "0.0.0.0";
+        process.env[TIMEOUT_ENV] = "5000";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.httpIngressOptionsFrom({}).should.eql({ port: 9090, host: "0.0.0.0", syncTimeoutMs: 5000 });
+    });
+
+    it("httpIngressOptionsFrom prefers explicit flags over env vars", function() {
+        process.env[PORT_ENV] = "9090";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.httpIngressOptionsFrom({ "http-ingress-port": "1234" }).port.should.equal(1234);
+    });
+
+    it("httpIngressOptionsFrom rejects a non-negative-integer --http-ingress-port with a clear error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        (function() {
+            bin.httpIngressOptionsFrom({ "http-ingress-port": "not-a-port" });
+        }).should.throw(/--http-ingress-port must be a non-negative integer/);
+    });
+
+    it("httpIngressOptionsFrom rejects a non-positive-integer --http-sync-timeout-ms with a clear error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        (function() {
+            bin.httpIngressOptionsFrom({ "http-ingress-port": "8080", "http-sync-timeout-ms": "0" });
+        }).should.throw(/--http-sync-timeout-ms must be a positive integer/);
+    });
+
+    it("--help lists --http-ingress-port/--http-ingress-host/--http-sync-timeout-ms", function() {
+        this.timeout(15000); // spawns a real Node process, see other block's comment
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--http-ingress-port/);
+        out.should.match(/--http-ingress-host/);
+        out.should.match(/--http-sync-timeout-ms/);
+    });
+
+    it("worker --role workflow --http-ingress-port rejects (the workflow role never boots Node-RED)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "workflow", "http-ingress-port": "8080" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--http-ingress-port is not supported for --role workflow/);
+        });
+    });
+
+    it("worker --role activity threads --http-ingress-port/--http-ingress-host/--http-sync-timeout-ms into createActivityWorker's options", function() {
+        var workerModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
+        var stub = sinon.stub(workerModule, "createActivityWorker").resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            httpIngressAddress: { host: "127.0.0.1", port: 8080 },
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({
+            role: "activity",
+            flow: "/tmp/does-not-matter.json",
+            "http-ingress-port": "8080",
+            "http-ingress-host": "0.0.0.0",
+            "http-sync-timeout-ms": "5000"
+        }).then(function() {
+            stub.firstCall.args[1].httpIngress.should.eql({ port: 8080, host: "0.0.0.0", syncTimeoutMs: 5000 });
+        }).finally(function() {
+            stub.restore();
+            delete require.cache[BIN];
+        });
+    });
+
+    it("worker --role activity logs the bound HTTP ingress address when enabled", function() {
+        var workerModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
+        var stub = sinon.stub(workerModule, "createActivityWorker").resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            httpIngressAddress: { host: "127.0.0.1", port: 8080 },
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+        var logSpy = sinon.spy(console, "log");
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json", "http-ingress-port": "8080" }).then(function() {
+            var logged = logSpy.getCalls().some(function(call) {
+                return /http ingress listening on http:\/\/127\.0\.0\.1:8080\//.test(call.args[0]);
+            });
+            logged.should.equal(true);
+        }).finally(function() {
+            logSpy.restore();
+            stub.restore();
+            delete require.cache[BIN];
+        });
+    });
+});

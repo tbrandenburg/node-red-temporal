@@ -1,5 +1,7 @@
 var should = require("should");
 var path = require("path");
+var fs = require("fs");
+var http = require("http");
 var sinon = require("sinon");
 var { Worker, NativeConnection } = require("@temporalio/worker");
 var WORKER_MODULE_PATH = require.resolve("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
@@ -7,6 +9,7 @@ var { createWorker, WORKFLOWS_PATH } = require(WORKER_MODULE_PATH);
 
 var FIXTURES = path.join(__dirname, "..", "fixtures");
 var FLOW = path.join(FIXTURES, "four-node-flow.json");
+var FLOW_CHANGED = path.join(FIXTURES, "four-node-flow.changed.json");
 var FANOUT_FLOW = path.join(FIXTURES, "fanout-flow.json");
 var SCHEDULED_FLOW = path.join(FIXTURES, "scheduled-flow.json");
 var EXTERNAL_SOURCE_FLOW = path.join(FIXTURES, "external-source-flow.json");
@@ -33,6 +36,33 @@ function stubClientModule(startStub) {
         exports: {
             Connection: { connect: sinon.stub().resolves({}) },
             Client: function() { return { workflow: { start: startStub } }; }
+        }
+    };
+    return function restore() {
+        if (original) {
+            require.cache[CLIENT_PATH] = original;
+        } else {
+            delete require.cache[CLIENT_PATH];
+        }
+    };
+}
+
+/**
+ * issue #58 M5/M6: same convention as `stubClientModule`, but also exposes
+ * `WorkflowIdReusePolicy`/`WorkflowExecutionAlreadyStartedError`, which
+ * `httpIngress.js`'s own `require("@temporalio/client")` needs.
+ */
+function stubHttpClientModule(startStub) {
+    var original = require.cache[CLIENT_PATH];
+    require.cache[CLIENT_PATH] = {
+        id: CLIENT_PATH,
+        filename: CLIENT_PATH,
+        loaded: true,
+        exports: {
+            Connection: { connect: sinon.stub().resolves({}) },
+            Client: function() { return { workflow: { start: startStub, getHandle: sinon.stub().returns({ result: sinon.stub().resolves({}) }) } }; },
+            WorkflowIdReusePolicy: { REJECT_DUPLICATE: "REJECT_DUPLICATE" },
+            WorkflowExecutionAlreadyStartedError: function WorkflowExecutionAlreadyStartedError() {}
         }
     };
     return function restore() {
@@ -739,5 +769,196 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #16 role de
         config.namespace.should.equal(process.env.TEMPORAL_NAMESPACE || "default");
         config.workflowTaskQueue.should.equal(process.env.TEMPORAL_WORKFLOW_TASK_QUEUE || "node-red-temporal");
         config.activityTaskQueue.should.equal(process.env.TEMPORAL_ACTIVITY_TASK_QUEUE || "node-red-temporal");
+    });
+});
+
+// issue #58 M5: opt-in HTTP ingress wiring in createActivityWorker/
+// createCombinedWorker - fully disabled by default (no options.httpIngress),
+// started only when options.httpIngress.port is a number (including 0),
+// reusing the SAME memoized getClient/live currentFlowInfo/getNode this
+// function already builds - never a second Temporal client, never a second
+// flow-file read.
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #58 M5 HTTP ingress wiring", function() {
+    this.timeout(20000);
+
+    var worker = require(WORKER_MODULE_PATH);
+    var createStub;
+    var nativeConnectionStub;
+    var result;
+    var restoreClient;
+
+    beforeEach(function() {
+        createStub = sinon.stub(Worker, "create").resolves({ shutdown: sinon.stub() });
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
+        result = null;
+        restoreClient = null;
+    });
+
+    afterEach(function() {
+        var stopPromise = result ? result.stop() : Promise.resolve();
+        return stopPromise.finally(function() {
+            createStub.restore();
+            nativeConnectionStub.restore();
+            if (restoreClient) {
+                restoreClient();
+            }
+        });
+    });
+
+    function postJson(port, urlPath) {
+        return new Promise(function(resolve, reject) {
+            var req = http.request({
+                host: "127.0.0.1",
+                port: port,
+                path: urlPath,
+                method: "POST",
+                headers: { "Content-Type": "application/json" }
+            }, function(res) {
+                var chunks = [];
+                res.on("data", function(chunk) { chunks.push(chunk); });
+                res.on("end", function() {
+                    resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks).toString("utf8") });
+                });
+            });
+            req.on("error", reject);
+            req.end(JSON.stringify({ payload: 1 }));
+        });
+    }
+
+    it("does NOT start an HTTP server when options.httpIngress is not given (fully opt-in, default behavior unchanged)", function() {
+        return worker.createActivityWorker(FLOW).then(function(created) {
+            result = created;
+            should.not.exist(result.httpIngressAddress);
+        });
+    });
+
+    it("starts the HTTP ingress server when options.httpIngress.port is 0 (ephemeral port is a valid bind request, not disabled)", function() {
+        var startStub = sinon.stub().resolves({ workflowId: "wf-http" });
+        restoreClient = stubHttpClientModule(startStub);
+
+        return worker.createActivityWorker(FLOW, { httpIngress: { port: 0 } }).then(function(created) {
+            result = created;
+            result.httpIngressAddress.should.be.an.Object();
+            result.httpIngressAddress.port.should.be.above(0);
+
+            return postJson(result.httpIngressAddress.port, "/_node-red-temporal/http/async/n1");
+        }).then(function(res) {
+            res.statusCode.should.equal(202);
+            startStub.calledOnce.should.equal(true);
+        });
+    });
+
+    it("fails createActivityWorker() itself when the HTTP ingress server cannot bind (never silently swallowed)", function() {
+        var blocker = http.createServer();
+        return new Promise(function(resolve, reject) {
+            blocker.listen(0, "127.0.0.1", function() { resolve(); });
+            blocker.on("error", reject);
+        }).then(function() {
+            var boundPort = blocker.address().port;
+            return worker.createActivityWorker(FLOW, { httpIngress: { port: boundPort } }).then(function() {
+                throw new Error("expected createActivityWorker() to reject on a bind failure");
+            }, function(err) {
+                err.should.be.an.Error();
+            });
+        }).finally(function() {
+            return new Promise(function(resolve) { blocker.close(resolve); });
+        });
+    });
+
+    it("stop() closes the HTTP ingress server before tearing down worker/capture/handle/connection", function() {
+        var startStub = sinon.stub().resolves({ workflowId: "wf-http" });
+        restoreClient = stubHttpClientModule(startStub);
+
+        return worker.createActivityWorker(FLOW, { httpIngress: { port: 0 } }).then(function(created) {
+            result = created;
+            var boundPort = result.httpIngressAddress.port;
+            return result.stop().then(function() {
+                result = null;
+                // The listening socket must already be closed - a fresh
+                // connect attempt to the same port must fail (ECONNREFUSED),
+                // not succeed.
+                return new Promise(function(resolve, reject) {
+                    var req = http.request({ host: "127.0.0.1", port: boundPort, path: "/", method: "POST" }, function() {
+                        reject(new Error("expected connection to be refused after stop()"));
+                    });
+                    req.on("error", function() { resolve(); });
+                    req.end();
+                });
+            });
+        });
+    });
+});
+
+// issue #58 M6: proves the HTTP ingress route observes the CURRENT
+// (post-redeploy) flow, live, via the SAME runtime.currentFlowInfo getter
+// createActivityWorker already wires for Capture - never a cached/static
+// snapshot from worker-boot time and never a second flow-file read.
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #58 M6 HTTP ingress observes redeploy without process restart", function() {
+    this.timeout(20000);
+
+    var worker = require(WORKER_MODULE_PATH);
+    var createStub;
+    var nativeConnectionStub;
+    var result;
+    var restoreClient;
+
+    beforeEach(function() {
+        createStub = sinon.stub(Worker, "create").resolves({ shutdown: sinon.stub() });
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
+        result = null;
+        restoreClient = null;
+    });
+
+    afterEach(function() {
+        var stopPromise = result ? result.stop() : Promise.resolve();
+        return stopPromise.finally(function() {
+            createStub.restore();
+            nativeConnectionStub.restore();
+            if (restoreClient) {
+                restoreClient();
+            }
+        });
+    });
+
+    function postAsync(port, startNodeId) {
+        return new Promise(function(resolve, reject) {
+            var req = http.request({
+                host: "127.0.0.1",
+                port: port,
+                path: "/_node-red-temporal/http/async/" + startNodeId,
+                method: "POST",
+                headers: { "Content-Type": "application/json" }
+            }, function(res) {
+                var chunks = [];
+                res.on("data", function(chunk) { chunks.push(chunk); });
+                res.on("end", function() { resolve(); });
+            });
+            req.on("error", reject);
+            req.end(JSON.stringify({ payload: 1 }));
+        });
+    }
+
+    it("two HTTP-ingress-started workflows straddling a handle.deploy() carry DIFFERENT flowVersions, proving live (not cached) observation", function() {
+        var startStub = sinon.stub().resolves({ workflowId: "wf-http-redeploy" });
+        restoreClient = stubHttpClientModule(startStub);
+        var newFlow = JSON.parse(fs.readFileSync(FLOW_CHANGED, "utf8"));
+
+        return worker.createActivityWorker(FLOW, { httpIngress: { port: 0 } }).then(function(created) {
+            result = created;
+            return postAsync(result.httpIngressAddress.port, "n1");
+        }).then(function() {
+            startStub.calledOnce.should.equal(true);
+            var flowVersionA = startStub.firstCall.args[1].args[0].flowVersion;
+            flowVersionA.should.equal(result.handle.flowVersion);
+
+            return result.handle.deploy(newFlow).then(function() {
+                return postAsync(result.httpIngressAddress.port, "n1");
+            }).then(function() {
+                startStub.calledTwice.should.equal(true);
+                var flowVersionB = startStub.secondCall.args[1].args[0].flowVersion;
+                flowVersionB.should.not.equal(flowVersionA);
+                flowVersionB.should.equal(result.handle.flowVersion);
+            });
+        });
     });
 });
