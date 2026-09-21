@@ -107,14 +107,17 @@ release:
 ## bootstraps automatically instead of starting broken background processes.
 run: build
 	@mkdir -p $(PID_DIR) $(EDITOR_USERDIR) $(RUNNER_USERDIR)
-	@command -v temporal >/dev/null 2>&1 || { \
-		echo "error: 'temporal' CLI not found on PATH."; \
-		echo "Install it: https://docs.temporal.io/cli (e.g. curl -sSf https://temporal.download/cli.sh | sh)"; \
-		exit 1; \
-	}
-	@if ss -tln 2>/dev/null | grep -q ':7233 '; then \
+	@if [ -n "$(TEMPORAL_ADDRESS)" ]; then \
+		echo "TEMPORAL_ADDRESS=$(TEMPORAL_ADDRESS) set - using that Temporal server, not starting a local dev server"; \
+	elif ss -tln 2>/dev/null | grep -q ':7233 '; then \
 		echo "Temporal already listening on :7233 - reusing it"; \
 	else \
+		command -v temporal >/dev/null 2>&1 || { \
+			echo "error: 'temporal' CLI not found on PATH."; \
+			echo "Install it: https://docs.temporal.io/cli (e.g. curl -sSf https://temporal.download/cli.sh | sh)"; \
+			echo "Or point at an existing Temporal server with TEMPORAL_ADDRESS=host:port make run."; \
+			exit 1; \
+		}; \
 		echo "Starting Temporal dev server..."; \
 		setsid temporal server start-dev --db-filename $(TEMPORAL_DB) --ip 0.0.0.0 \
 			> $(TEMPORAL_LOG) 2>&1 < /dev/null & echo $$! > $(TEMPORAL_PID); \
@@ -179,8 +182,13 @@ run: build
 
 ## status: report Temporal, runner B, and editor A's process/port state
 status:
-	@echo "--- Temporal (127.0.0.1:7233) ---"
-	@temporal operator cluster health --address 127.0.0.1:7233 2>&1 || true
+	@addr="$${TEMPORAL_ADDRESS:-127.0.0.1:7233}"; \
+	echo "--- Temporal ($$addr) ---"; \
+	if command -v temporal >/dev/null 2>&1; then \
+		temporal operator cluster health --address "$$addr" 2>&1 || true; \
+	else \
+		echo "'temporal' CLI not installed - skipping cluster health check"; \
+	fi
 	@echo "--- Runner B (pid + admin API :$(ADMIN_PORT)) ---"
 	@if [ -f $(RUNNER_PID) ] && kill -0 "$$(cat $(RUNNER_PID))" 2>/dev/null; then \
 		echo "process running (pid $$(cat $(RUNNER_PID)))"; \
