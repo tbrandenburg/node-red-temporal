@@ -1113,7 +1113,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #75: create
         var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" });
 
         var promise = onIngress(ingressWith(res, req));
-        req.trigger("close");
+        req.trigger("aborted");
         resolveResult({ httpResponse: { statusCode: 200, headers: {}, body: "late" } });
 
         return promise.then(function() {
@@ -1272,7 +1272,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #82: proces
         onIngress(ingressWith(res, req));
         return new Promise(function(resolve) { setImmediate(resolve); }).then(function() {
             registry.size().should.equal(1);
-            req.trigger("close");
+            req.trigger("aborted");
             registry.size().should.equal(0);
         });
     });
@@ -1312,6 +1312,194 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #82: proces
             return promise;
         }).then(function() {
             res.body.toString().should.equal("first-response");
+        });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #84: http disconnect lifecycle (normal completion vs real disconnect)", function() {
+    var worker = require(WORKER_MODULE_PATH);
+    var flowInfo = { graph: {}, nodeMeta: {}, flowVersion: "v1" };
+
+    /**
+     * Minimal EventEmitter-like fake supporting `on`/`trigger`, used to
+     * mimic `http.ServerResponse`'s "close" event alongside `writableEnded`.
+     */
+    function fakeRes() {
+        var listeners = {};
+        return {
+            headersSent: false,
+            writableEnded: false,
+            on(event, cb) { listeners[event] = cb; },
+            trigger(event) { if (listeners[event]) { listeners[event](); } },
+            writeHead(statusCode, headers) { this.statusCode = statusCode; this.headers = headers; this.headersSent = true; },
+            end(body) { this.body = body; this.writableEnded = true; }
+        };
+    }
+
+    function fakeReq() {
+        var listeners = {};
+        return {
+            on(event, cb) { listeners[event] = cb; },
+            trigger(event) { if (listeners[event]) { listeners[event](); } }
+        };
+    }
+
+    function ingressWith(res, req) {
+        return {
+            sourceNodeId: "httpIn1",
+            msg: { req: req, res: { _res: res }, payload: {} },
+            sends: [{ port: 0, destinationId: "n2", msg: { req: req, res: { _res: res }, payload: {} } }]
+        };
+    }
+
+    function spyRegistry() {
+        var registry = worker.createHttpBridgeRegistry();
+        var capturedIds = [];
+        var originalRegister = registry.register;
+        registry.register = function(id, entry) {
+            capturedIds.push(id);
+            return originalRegister.call(registry, id, entry);
+        };
+        registry.capturedIds = capturedIds;
+        return registry;
+    }
+
+    it("M2: normal request completion (req 'close' after body fully consumed) is NOT treated as a disconnect - registry entry survives and the early-response fast path still writes the response", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {}); // sibling branches still running
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        var promise = onIngress(ingressWith(res, req));
+
+        return new Promise(function(resolve) { setImmediate(resolve); }).then(function() {
+            // A normal POST: the body is fully consumed and the
+            // IncomingMessage emits "close" well before the HTTP Response
+            // Activity runs. This must NOT be mistaken for a disconnect.
+            req.trigger("close");
+            registry.size().should.equal(1);
+            registry.notify(registry.capturedIds[0], { statusCode: 200, headers: {}, body: "on-time" });
+            return promise;
+        }).then(function() {
+            res.statusCode.should.equal(200);
+            res.body.toString().should.equal("on-time");
+        });
+    });
+
+    it("M3: real premature disconnect (response/socket 'close' before writableEnded) still marks disconnected and removes the registry entry", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {});
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        onIngress(ingressWith(res, req));
+        return new Promise(function(resolve) { setImmediate(resolve); }).then(function() {
+            registry.size().should.equal(1);
+            res.writableEnded.should.equal(false);
+            res.trigger("close"); // socket/connection disappeared before any response was written
+            registry.size().should.equal(0);
+        });
+    });
+
+    it("M3: response 'close' AFTER writableEnded (normal completed response) does not attempt any further/duplicate cleanup", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().resolves({ httpResponse: { statusCode: 200, headers: {}, body: "done" } }) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(200);
+            res.writableEnded.should.equal(true);
+            registry.size().should.equal(0); // already consumed by the durable fallback path
+            // The real ServerResponse now also emits "close" after finishing -
+            // this must be a harmless no-op, not a second disconnect/cleanup.
+            (function() { res.trigger("close"); }).should.not.throw();
+        });
+    });
+
+    it("request 'aborted' still marks premature request termination (unchanged behavior)", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {});
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        onIngress(ingressWith(res, req));
+        return new Promise(function(resolve) { setImmediate(resolve); }).then(function() {
+            registry.size().should.equal(1);
+            req.trigger("aborted");
+            registry.size().should.equal(0);
+        });
+    });
+
+    it("M5-substitute: real Node http server/client integration - a normal POST whose request body is fully consumed (real 'close' semantics) before the HTTP Response Activity runs still receives the early response", function() {
+        var registry = spyRegistry();
+        var resolveActivityReady;
+        var activityReady = new Promise(function(resolve) { resolveActivityReady = resolve; });
+        var neverSettles = new Promise(function() {}); // sibling branch still "running"
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        var server = http.createServer(function(req, res) {
+            var chunks = [];
+            req.on("data", function(chunk) { chunks.push(chunk); });
+            req.on("end", function() {
+                // Real Node.js semantics: once the body is fully read, the
+                // IncomingMessage completes and will emit "close" - well
+                // before the HTTP Response Activity executes below.
+                onIngress({
+                    sourceNodeId: "httpIn1",
+                    msg: { req: req, res: { _res: res }, payload: Buffer.concat(chunks).toString() },
+                    sends: [{ port: 0, destinationId: "n2", msg: { req: req, res: { _res: res }, payload: {} } }]
+                });
+                setImmediate(function() { resolveActivityReady(); });
+            });
+        });
+
+        return new Promise(function(resolve) { server.listen(0, "127.0.0.1", resolve); }).then(function() {
+            var port = server.address().port;
+            var clientRequestPromise = new Promise(function(resolve, reject) {
+                var body = "hello-world-post-body";
+                var request = http.request({ host: "127.0.0.1", port: port, method: "POST", path: "/respond-now" }, function(response) {
+                    var respChunks = [];
+                    response.on("data", function(chunk) { respChunks.push(chunk); });
+                    response.on("end", function() {
+                        resolve({ statusCode: response.statusCode, body: Buffer.concat(respChunks).toString() });
+                    });
+                });
+                request.on("error", reject);
+                request.end(body);
+            });
+
+            // Drive the Activity-side notification independently of (and
+            // concurrently with) waiting for the client's response - the
+            // notify() call below is what actually causes the server to
+            // write/complete the response the client is waiting on.
+            var notifyPromise = activityReady.then(function() {
+                // Give the real "close" event (fired asynchronously by
+                // Node's http machinery after "end") a tick to land before
+                // the Activity notifies - this is exactly the race issue
+                // #84 describes.
+                return new Promise(function(resolve) { setImmediate(resolve); });
+            }).then(function() {
+                registry.capturedIds.length.should.equal(1);
+                registry.size().should.equal(1); // must NOT have been removed by a false "close"-as-disconnect
+                registry.notify(registry.capturedIds[0], { statusCode: 200, headers: {}, body: "early-response" });
+            });
+
+            return Promise.all([clientRequestPromise, notifyPromise]).then(function(results) {
+                var clientSideResponse = results[0];
+                clientSideResponse.statusCode.should.equal(200);
+                clientSideResponse.body.should.equal("early-response");
+            });
+        }).finally(function() {
+            return new Promise(function(resolve) { server.close(resolve); });
         });
     });
 });
