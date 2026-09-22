@@ -4,10 +4,12 @@ var EventEmitter = require("events");
 var http = require("http");
 var {
     isForwardableCommsEvent,
+    isForwardableRuntimeEvent,
     isEmptyStatus,
     encodeRecord,
     decodeLine,
     createStatusSnapshot,
+    createRuntimeStateSnapshot,
     createRuntimeEventsRoute,
     createRuntimeEventsReceiver,
     DEFAULT_PATH
@@ -26,6 +28,22 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteRuntimeEvents", func
             isForwardableCommsEvent(null).should.be.false();
             isForwardableCommsEvent(undefined).should.be.false();
             isForwardableCommsEvent("debug").should.be.false();
+        });
+    });
+
+    describe("isForwardableRuntimeEvent()", function() {
+        it("accepts native runtime-state runtime-events", function() {
+            isForwardableRuntimeEvent({ id: "runtime-state", payload: { state: "start" }, retain: true }).should.be.true();
+            isForwardableRuntimeEvent({ id: "runtime-state", retain: true }).should.be.true();
+        });
+        it("rejects any other runtime-event id", function() {
+            isForwardableRuntimeEvent({ id: "runtime-deploy" }).should.be.false();
+            isForwardableRuntimeEvent({ id: "node-status" }).should.be.false();
+        });
+        it("rejects malformed input", function() {
+            isForwardableRuntimeEvent(null).should.be.false();
+            isForwardableRuntimeEvent(undefined).should.be.false();
+            isForwardableRuntimeEvent("runtime-state").should.be.false();
         });
     });
 
@@ -62,6 +80,19 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteRuntimeEvents", func
 
         it("rejects/ignores a comms record with a non-debug topic", function() {
             var line = encodeRecord("comms", { topic: "status/n1", data: {} });
+            should(decodeLine(line)).be.null();
+        });
+
+        it("round-trips a runtime-state record, preserving payload unchanged", function() {
+            var event = { id: "runtime-state", payload: { state: "start", deploy: true }, retain: true };
+            var line = encodeRecord("runtime-state", event);
+            line.should.endWith("\n");
+            var decoded = decodeLine(line);
+            decoded.should.eql({ type: "runtime-state", event: event });
+        });
+
+        it("rejects/ignores a runtime-state record whose event id is not runtime-state", function() {
+            var line = encodeRecord("runtime-state", { id: "node-status" });
             should(decodeLine(line)).be.null();
         });
 
@@ -127,6 +158,27 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteRuntimeEvents", func
         });
     });
 
+    describe("createRuntimeStateSnapshot()", function() {
+        it("starts with no retained state", function() {
+            var snapshot = createRuntimeStateSnapshot();
+            should(snapshot.get()).be.null();
+        });
+
+        it("retains only the latest runtime-state event", function() {
+            var snapshot = createRuntimeStateSnapshot();
+            snapshot.apply({ id: "runtime-state", payload: { state: "stop" }, retain: true });
+            snapshot.apply({ id: "runtime-state", payload: { state: "start" }, retain: true });
+            snapshot.get().should.eql({ id: "runtime-state", payload: { state: "start" }, retain: true });
+        });
+
+        it("ignores non-runtime-state events", function() {
+            var snapshot = createRuntimeStateSnapshot();
+            snapshot.apply({ id: "node-status", status: {} });
+            snapshot.apply(null);
+            should(snapshot.get()).be.null();
+        });
+    });
+
     describe("createRuntimeEventsRoute()", function() {
         it("requires options.events", function() {
             (function() {
@@ -189,6 +241,55 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteRuntimeEvents", func
             route.close();
         });
 
+        it("forwards only runtime-state runtime-events, never other ids", function() {
+            var events = new EventEmitter();
+            var route = createRuntimeEventsRoute({ events: events });
+            var res = makeRes();
+            var req = makeReq();
+            route.handler(req, res);
+
+            events.emit("runtime-event", { id: "runtime-state", payload: { state: "start" }, retain: true });
+            events.emit("runtime-event", { id: "runtime-deploy", payload: {} });
+            events.emit("runtime-event", { id: "node-status" });
+
+            var lines = linesOf(res);
+            lines.should.have.length(1);
+            lines[0].should.eql({ type: "runtime-state", event: { id: "runtime-state", payload: { state: "start" }, retain: true } });
+
+            route.close();
+        });
+
+        it("sends the retained runtime-state snapshot before live events, to a newly-connected receiver", function() {
+            var events = new EventEmitter();
+            var route = createRuntimeEventsRoute({ events: events });
+            events.emit("runtime-event", { id: "runtime-state", payload: { state: "start" }, retain: true });
+
+            var res = makeRes();
+            var req = makeReq();
+            route.handler(req, res);
+
+            linesOf(res).should.eql([
+                { type: "runtime-state", event: { id: "runtime-state", payload: { state: "start" }, retain: true } }
+            ]);
+
+            events.emit("runtime-event", { id: "runtime-state", payload: { state: "stop" }, retain: true });
+            linesOf(res).should.have.length(2);
+            linesOf(res)[1].should.eql({ type: "runtime-state", event: { id: "runtime-state", payload: { state: "stop" }, retain: true } });
+
+            route.close();
+        });
+
+        it("does not replay any runtime-state when B has never emitted one", function() {
+            var events = new EventEmitter();
+            var route = createRuntimeEventsRoute({ events: events });
+            var res = makeRes();
+            var req = makeReq();
+            route.handler(req, res);
+
+            linesOf(res).should.eql([]);
+            route.close();
+        });
+
         it("removes its per-connection listeners on request close (no leak)", function() {
             var events = new EventEmitter();
             var route = createRuntimeEventsRoute({ events: events });
@@ -198,14 +299,17 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteRuntimeEvents", func
 
             events.listenerCount("node-status").should.equal(2); // permanent snapshot tracker + this connection
             events.listenerCount("comms").should.equal(1);
+            events.listenerCount("runtime-event").should.equal(2); // permanent snapshot tracker + this connection
 
             req.emit("close");
 
             events.listenerCount("node-status").should.equal(1); // only the permanent tracker remains
             events.listenerCount("comms").should.equal(0);
+            events.listenerCount("runtime-event").should.equal(1); // only the permanent tracker remains
 
             route.close();
             events.listenerCount("node-status").should.equal(0);
+            events.listenerCount("runtime-event").should.equal(0);
         });
 
         it("supports multiple independent connections, each receiving events", function() {
@@ -363,6 +467,78 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/remoteRuntimeEvents", func
 
             var receiver = createRuntimeEventsReceiver({ events: events, target: "http://localhost:1881", fetch: fetchStub, log: { warn() {} } });
             receiver.start();
+        });
+
+        it("re-emits a runtime-state record as a native runtime-event on A's events singleton", function(done) {
+            var events = new EventEmitter();
+            var nativeEvent = { id: "runtime-state", payload: { state: "start", deploy: true }, retain: true };
+            var line = JSON.stringify({ type: "runtime-state", event: nativeEvent }) + "\n";
+            var fetchStub = sinon.stub().resolves(makeStreamResponse([line]));
+
+            events.once("runtime-event", function(event) {
+                event.should.eql(nativeEvent);
+                receiver.stop();
+                done();
+            });
+
+            var receiver = createRuntimeEventsReceiver({ events: events, target: "http://localhost:1881", fetch: fetchStub, log: { warn() {} } });
+            receiver.start();
+        });
+
+        it("re-asserts B's last known runtime-state after A's own local runtime-state event fires (ordering safeguard)", function(done) {
+            var events = new EventEmitter();
+            var bState = { id: "runtime-state", payload: { state: "start", deploy: true }, retain: true };
+            var line = JSON.stringify({ type: "runtime-state", event: bState }) + "\n";
+            // never resolves further - simulates an open, live stream so the
+            // receiver stays connected while we simulate A's own local emit.
+            var fetchStub = sinon.stub().resolves(makeStreamResponse([line]));
+
+            var receiver = createRuntimeEventsReceiver({ events: events, target: "http://localhost:1881", fetch: fetchStub, log: { warn() {} } });
+
+            var seenStates = [];
+            events.on("runtime-event", function(event) {
+                if (event && event.id === "runtime-state") {
+                    seenStates.push(event.payload && event.payload.state);
+                }
+            });
+
+            events.once("runtime-event", function() {
+                // B's relayed "start" has now been fully applied (the outer
+                // emit call that delivered it has returned). Simulate A's
+                // own local runtime emitting its intentionally-always-
+                // stopped state on a LATER tick, e.g. as part of a redeploy
+                // - never synchronously nested inside the relay's own emit
+                // call, matching how Node-RED's own flows/index.js would
+                // actually emit it from a wholly separate call stack.
+                setImmediate(function() {
+                    events.emit("runtime-event", { id: "runtime-state", payload: { state: "stop", deploy: true }, retain: true });
+
+                    seenStates.should.eql(["start", "stop", "start"]);
+                    receiver.stop();
+                    done();
+                });
+            });
+
+            receiver.start();
+        });
+
+        it("does not re-assert anything when A's local runtime-state fires before B has ever sent one", function() {
+            var events = new EventEmitter();
+            var fetchStub = sinon.stub().callsFake(function() {
+                return new Promise(function() {}); // never resolves: no B data has arrived yet
+            });
+
+            var receiver = createRuntimeEventsReceiver({ events: events, target: "http://localhost:1881", fetch: fetchStub, log: { warn() {} } });
+            receiver.start();
+
+            var seenStates = [];
+            events.on("runtime-event", function(event) {
+                seenStates.push(event.payload && event.payload.state);
+            });
+            events.emit("runtime-event", { id: "runtime-state", payload: { state: "stop" }, retain: true });
+
+            seenStates.should.eql(["stop"]); // no B state known yet - nothing to correct with
+            receiver.stop();
         });
 
         it("reconnects with a bounded backoff after the stream closes", function(done) {
