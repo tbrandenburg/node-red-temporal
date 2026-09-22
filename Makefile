@@ -34,6 +34,7 @@ RUNNER_USERDIR := .node-red-temporal/runner-userdir
 EDITOR_PORT    := 1880
 ADMIN_PORT     := 1881
 ADMIN_HOST     := 127.0.0.1
+NODE_TIMEOUT_MS ?= 1800000
 
 PID_DIR        := /tmp/node-red-temporal-run
 TEMPORAL_PID   := $(PID_DIR)/temporal.pid
@@ -142,6 +143,7 @@ run: build
 		setsid node $(CLI) worker --role activity --flow "$$seed_flow" \
 			--admin-port $(ADMIN_PORT) --admin-host $(ADMIN_HOST) \
 			--user-dir $(RUNNER_USERDIR) \
+			--node-timeout-ms $(NODE_TIMEOUT_MS) \
 			> $(RUNNER_LOG) 2>&1 < /dev/null & echo $$! > $(RUNNER_PID); \
 		sleep 2; \
 		kill -0 "$$(cat $(RUNNER_PID))" 2>/dev/null || { \
