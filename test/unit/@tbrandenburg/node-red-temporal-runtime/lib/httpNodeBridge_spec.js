@@ -250,12 +250,12 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/httpNodeBridge - M4: real 
         }
     });
 
-    function bootWith(flowFile) {
+    function bootWith(flowFile, extraExecuteNodeDeps) {
         return bootstrap(flowFile).then(function(h) {
             handle = h;
             capture = new Capture();
             capture.install(RED);
-            var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture });
+            var executeNode = createExecuteNode(Object.assign({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture }, extraExecuteNodeDeps || {}));
             return { handle: h, executeNode: executeNode };
         });
     }
@@ -328,4 +328,99 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/httpNodeBridge - M4: real 
             result.should.not.have.property("httpResponse");
         });
     });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/activities - issue #82: optional onHttpResponse early-notification hook", function() {
+    this.timeout(20000);
+
+    var handle;
+    var capture;
+
+    afterEach(function() {
+        if (capture) {
+            capture.uninstall();
+            capture = null;
+        }
+        if (handle) {
+            var h = handle;
+            handle = null;
+            return h.stop();
+        }
+    });
+
+    function bootWith(flowFile, extraExecuteNodeDeps) {
+        return bootstrap(flowFile).then(function(h) {
+            handle = h;
+            capture = new Capture();
+            capture.install(RED);
+            var executeNode = createExecuteNode(Object.assign({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture }, extraExecuteNodeDeps || {}));
+            return { handle: h, executeNode: executeNode };
+        });
+    }
+
+    it("invokes onHttpResponse(httpBridgeId, descriptor) when both httpBridge and httpBridgeId are present on a stock HTTP Response node", function() {
+        var calls = [];
+        return bootWith(HTTP_RESPONSE_FLOW, { onHttpResponse: function(id, descriptor) { calls.push({ id: id, descriptor: descriptor }); } }).then(function(ctx) {
+            return ctx.executeNode({
+                flowVersion: ctx.handle.flowVersion,
+                nodeId: "r1",
+                msg: { payload: "hi", _msgid: "m1" },
+                httpBridge: true,
+                httpBridgeId: "bridge-1"
+            });
+        }).then(function(result) {
+            calls.length.should.equal(1);
+            calls[0].id.should.equal("bridge-1");
+            calls[0].descriptor.should.equal(result.httpResponse);
+        });
+    });
+
+    it("does not invoke onHttpResponse when httpBridgeId is absent, even with httpBridge:true", function() {
+        var calls = [];
+        return bootWith(HTTP_RESPONSE_FLOW, { onHttpResponse: function() { calls.push(1); } }).then(function(ctx) {
+            return ctx.executeNode({
+                flowVersion: ctx.handle.flowVersion,
+                nodeId: "r1",
+                msg: { payload: "hi", _msgid: "m2" },
+                httpBridge: true
+            });
+        }).then(function(result) {
+            calls.length.should.equal(0);
+            result.httpResponse.body.should.equal("hi");
+        });
+    });
+
+    it("does not invoke onHttpResponse for a non-http-response node even under httpBridge:true/httpBridgeId", function() {
+        var calls = [];
+        return bootWith(FLOW_FOUR_NODE_FLOW_PATH(), { onHttpResponse: function() { calls.push(1); } }).then(function(ctx) {
+            return ctx.executeNode({
+                flowVersion: ctx.handle.flowVersion,
+                nodeId: "n2",
+                msg: { payload: 1, _msgid: "m3" },
+                httpBridge: true,
+                httpBridgeId: "bridge-2"
+            });
+        }).then(function() {
+            calls.length.should.equal(0);
+        });
+    });
+
+    it("a throwing onHttpResponse hook is caught/logged and never turns into a NODE_ERROR or changes the returned descriptor", function() {
+        return bootWith(HTTP_RESPONSE_FLOW, { onHttpResponse: function() { throw new Error("boom-notify"); } }).then(function(ctx) {
+            return ctx.executeNode({
+                flowVersion: ctx.handle.flowVersion,
+                nodeId: "r1",
+                msg: { payload: "still-ok", _msgid: "m4" },
+                httpBridge: true,
+                httpBridgeId: "bridge-3"
+            });
+        }).then(function(result) {
+            should.not.exist(result.error);
+            result.httpResponse.body.should.equal("still-ok");
+        });
+    });
+
+    function FLOW_FOUR_NODE_FLOW_PATH() {
+        return path.join(FIXTURES, "four-node-flow.json");
+    }
 });

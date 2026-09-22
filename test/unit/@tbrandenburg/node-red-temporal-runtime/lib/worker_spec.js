@@ -1122,3 +1122,196 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #75: create
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #82: process-local early-response bridge registry + ingress race", function() {
+    var worker = require(WORKER_MODULE_PATH);
+    var flowInfo = { graph: {}, nodeMeta: {}, flowVersion: "v1" };
+
+    function fakeRes() {
+        return {
+            headersSent: false,
+            writableEnded: false,
+            writeHead(statusCode, headers) { this.statusCode = statusCode; this.headers = headers; this.headersSent = true; },
+            end(body) { this.body = body; this.writableEnded = true; }
+        };
+    }
+
+    function fakeReq() {
+        var listeners = {};
+        return {
+            on(event, cb) { listeners[event] = cb; },
+            trigger(event) { if (listeners[event]) { listeners[event](); } }
+        };
+    }
+
+    function ingressWith(res, req) {
+        return {
+            sourceNodeId: "httpIn1",
+            msg: { req: req, res: { _res: res }, payload: {} },
+            sends: [{ port: 0, destinationId: "n2", msg: { req: req, res: { _res: res }, payload: {} } }]
+        };
+    }
+
+    /**
+     * Wraps a fresh registry so the test can observe/capture the
+     * ingress-generated `httpBridgeId` (an internal implementation detail
+     * otherwise invisible to the caller) and later drive `notify()` itself
+     * to simulate the Activity-side `onHttpResponse` hook firing - from
+     * this same process (the common case) or, implicitly, never at all
+     * (the multi-runner fallback case, simply by not calling notify()).
+     */
+    function spyRegistry() {
+        var registry = worker.createHttpBridgeRegistry();
+        var capturedIds = [];
+        var originalRegister = registry.register;
+        registry.register = function(id, entry) {
+            capturedIds.push(id);
+            return originalRegister.call(registry, id, entry);
+        };
+        registry.capturedIds = capturedIds;
+        return registry;
+    }
+
+    it("createHttpBridgeRegistry: register/notify/remove basic contract", function() {
+        var registry = worker.createHttpBridgeRegistry();
+        var res = fakeRes();
+        var resolved = false;
+        registry.register("b1", { liveRes: res, resolveEarly: function() { resolved = true; } });
+        registry.size().should.equal(1);
+
+        var wrote = registry.notify("b1", { statusCode: 200, headers: {}, body: "hi" });
+        wrote.should.equal(true);
+        resolved.should.equal(true);
+        res.statusCode.should.equal(200);
+        res.body.toString().should.equal("hi");
+        registry.size().should.equal(0);
+    });
+
+    it("createHttpBridgeRegistry: notify() for an unknown bridgeId is a harmless no-op", function() {
+        var registry = worker.createHttpBridgeRegistry();
+        registry.notify("nonexistent", { statusCode: 200, headers: {}, body: "x" }).should.equal(false);
+    });
+
+    it("createHttpBridgeRegistry: a second notify() for the same id (retry/duplicate) is a no-op - no second write", function() {
+        var registry = worker.createHttpBridgeRegistry();
+        var res = fakeRes();
+        registry.register("b1", { liveRes: res, resolveEarly: function() {} });
+        registry.notify("b1", { statusCode: 200, headers: {}, body: "first" }).should.equal(true);
+        registry.notify("b1", { statusCode: 500, headers: {}, body: "second" }).should.equal(false);
+        res.statusCode.should.equal(200);
+        res.body.toString().should.equal("first");
+    });
+
+    it("early local notification wins: response written immediately, ingress returns without waiting for the (never-settling) Workflow, and the registry entry is consumed", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {}); // sibling branches still running
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        var promise = onIngress(ingressWith(res, req));
+
+        return Promise.resolve().then(function() {
+            return new Promise(function(resolve) { setImmediate(resolve); });
+        }).then(function() {
+            registry.capturedIds.length.should.equal(1);
+            // Simulate the Activity-side onHttpResponse hook firing on THIS
+            // process, exactly like activities.js would via worker.js's
+            // `httpBridgeRegistry.notify`.
+            registry.notify(registry.capturedIds[0], { statusCode: 200, headers: {}, body: "fast-sibling-response" });
+            return promise;
+        }).then(function() {
+            res.statusCode.should.equal(200);
+            res.body.toString().should.equal("fast-sibling-response");
+            registry.size().should.equal(0);
+        });
+    });
+
+    it("multi-runner-safe fallback: no local notify() ever happens (as if a different runner executed the responding Activity) - the durable handle.result() path still writes the response and cleans up the registry entry", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().resolves({ httpResponse: { statusCode: 202, headers: {}, body: "fallback-response" } }) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(202);
+            res.body.toString().should.equal("fallback-response");
+            registry.size().should.equal(0);
+        });
+    });
+
+    it("timeout: registry entry is removed so a LATER (slow/racing) local notify() becomes a harmless miss and never overwrites the already-sent 504", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {});
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, 10, registry);
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(504);
+            registry.size().should.equal(0);
+            // A late Activity notification for the same (now-removed) id must
+            // not resurrect/overwrite the already-sent response.
+            var wrote = registry.notify(registry.capturedIds[0], { statusCode: 200, headers: {}, body: "too-late" });
+            wrote.should.equal(false);
+            res.statusCode.should.equal(504);
+        });
+    });
+
+    it("client disconnect: registry entry is removed even before the Workflow/early-response settles", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {});
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        onIngress(ingressWith(res, req));
+        return new Promise(function(resolve) { setImmediate(resolve); }).then(function() {
+            registry.size().should.equal(1);
+            req.trigger("close");
+            registry.size().should.equal(0);
+        });
+    });
+
+    it("workflow start failure: the registry entry (registered before start()) is removed, never left dangling", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var errorSpy = sinon.stub(console, "error");
+        var registry = spyRegistry();
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.reject(new Error("temporal unreachable")); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        return onIngress(ingressWith(res, req)).then(function() {
+            res.statusCode.should.equal(503);
+            registry.size().should.equal(0);
+        }).finally(function() {
+            errorSpy.restore();
+        });
+    });
+
+    it("ambiguity preservation: a second local notify() for the same bridgeId (two HTTP Response nodes both executing on this runner) never overwrites the already-sent first response", function() {
+        var res = fakeRes();
+        var req = fakeReq();
+        var registry = spyRegistry();
+        var neverSettles = new Promise(function() {});
+        var client = { workflow: { start: sinon.stub().resolves(), getHandle: sinon.stub().returns({ result: sinon.stub().returns(neverSettles) }) } };
+        var onIngress = worker.createOnHttpBridgeIngress(function() { return Promise.resolve(client); }, flowInfo, { workflowTaskQueue: "q", activityTaskQueue: "q" }, undefined, undefined, registry);
+
+        var promise = onIngress(ingressWith(res, req));
+        return new Promise(function(resolve) { setImmediate(resolve); }).then(function() {
+            var bridgeId = registry.capturedIds[0];
+            registry.notify(bridgeId, { statusCode: 200, headers: {}, body: "first-response" });
+            // A second stock HTTP Response node executing (the workflow will
+            // eventually fail HTTP_RESPONSE_AMBIGUOUS on its own, independent
+            // of this notify hook) - its notification must be a no-op.
+            var secondWrote = registry.notify(bridgeId, { statusCode: 200, headers: {}, body: "second-response" });
+            secondWrote.should.equal(false);
+            return promise;
+        }).then(function() {
+            res.body.toString().should.equal("first-response");
+        });
+    });
+});

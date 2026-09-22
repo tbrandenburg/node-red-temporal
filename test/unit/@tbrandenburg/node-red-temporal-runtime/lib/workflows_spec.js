@@ -1098,3 +1098,44 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #75: htt
     });
 });
 
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #82: httpBridgeId propagation", function() {
+    it("threads httpBridgeId through to every httpBridge executeNode Activity call, replay-deterministically", function() {
+        var graph = { n1: [["resp"]], resp: [[]] };
+        var seenBridgeIds = [];
+        var executeNode = function(input) {
+            seenBridgeIds.push({ nodeId: input.nodeId, httpBridge: input.httpBridge, httpBridgeId: input.httpBridgeId });
+            if (input.nodeId === "n1") {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "resp", msg: {} }] });
+            }
+            return Promise.resolve({ sends: [], httpResponse: { statusCode: 200, headers: {}, body: "ok" } });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridge: true, httpBridgeId: "bridge-xyz" })
+            .then(function(result) {
+                result.httpResponse.body.should.equal("ok");
+                seenBridgeIds.length.should.equal(2);
+                seenBridgeIds.forEach(function(seen) {
+                    seen.httpBridge.should.equal(true);
+                    seen.httpBridgeId.should.equal("bridge-xyz");
+                });
+            });
+    });
+
+    it("does not add httpBridgeId to Activity input when httpBridge is set but no httpBridgeId was supplied", function() {
+        var graph = { n1: [[]] };
+        var executeNode = function(input) {
+            input.should.not.have.property("httpBridgeId");
+            return Promise.resolve({ sends: [], httpResponse: { statusCode: 200, headers: {}, body: "ok" } });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridge: true });
+    });
+
+    it("non-httpBridge runs never carry httpBridgeId on Activity input, even if one is supplied", function() {
+        var graph = { n1: [[]] };
+        var executeNode = function(input) {
+            input.should.not.have.property("httpBridge");
+            input.should.not.have.property("httpBridgeId");
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridgeId: "should-be-ignored" });
+    });
+});
