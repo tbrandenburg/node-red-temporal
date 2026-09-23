@@ -1139,3 +1139,76 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #82: htt
         return runFlow({ executeNode: executeNode, graph: graph, flowVersion: "v1", startNode: "n1", startMsg: {}, httpBridgeId: "should-be-ignored" });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #88: heartbeatTimeout on every executeNode Activity", function() {
+    var WORKFLOWS_MODULE_PATH = require.resolve("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/workflows.js");
+    var TEMPORAL_WORKFLOW_PATH = require.resolve("@temporalio/workflow");
+
+    // Same "stub the SDK's own entry point via require.cache" convention as
+    // worker_spec.js uses for @temporalio/client: `proxyActivities()` itself
+    // asserts a live Workflow sandbox context and throws otherwise, so the
+    // ONLY way to unit-test the ActivityOptions it is actually called with
+    // (without a real Workflow execution) is to stub the SDK module it
+    // comes from, then re-require workflows.js fresh so it picks up the
+    // stub instead of the real `proxyActivities`.
+    function withStubbedProxyActivities(fn) {
+        var originalWorkflowModule = require.cache[TEMPORAL_WORKFLOW_PATH];
+        var originalWorkflowsModule = require.cache[WORKFLOWS_MODULE_PATH];
+        var seenOptions = [];
+        require.cache[TEMPORAL_WORKFLOW_PATH] = {
+            id: TEMPORAL_WORKFLOW_PATH,
+            filename: TEMPORAL_WORKFLOW_PATH,
+            loaded: true,
+            exports: Object.assign({}, require(TEMPORAL_WORKFLOW_PATH), {
+                proxyActivities: function(options) {
+                    seenOptions.push(options);
+                    return { executeNode: function() { return Promise.resolve({ sends: [] }); } };
+                }
+            })
+        };
+        delete require.cache[WORKFLOWS_MODULE_PATH];
+        var stubbedWorkflows = require(WORKFLOWS_MODULE_PATH);
+        try {
+            fn(stubbedWorkflows, seenOptions);
+        } finally {
+            delete require.cache[WORKFLOWS_MODULE_PATH];
+            if (originalWorkflowModule) {
+                require.cache[TEMPORAL_WORKFLOW_PATH] = originalWorkflowModule;
+            } else {
+                delete require.cache[TEMPORAL_WORKFLOW_PATH];
+            }
+            if (originalWorkflowsModule) {
+                require.cache[WORKFLOWS_MODULE_PATH] = originalWorkflowsModule;
+            }
+        }
+    }
+
+    it("every per-node executeNode Activity proxy is built with a heartbeatTimeout", function() {
+        withStubbedProxyActivities(function(stubbedWorkflows, seenOptions) {
+            stubbedWorkflows.createExecuteNode("n1", 1, {}, undefined, undefined);
+            seenOptions.length.should.equal(1);
+            seenOptions[0].should.have.property("heartbeatTimeout");
+            seenOptions[0].heartbeatTimeout.should.be.a.Number();
+            seenOptions[0].heartbeatTimeout.should.be.above(0);
+        });
+    });
+
+    it("heartbeatTimeout stays strictly below startToCloseTimeout, so a healthy Activity has room to heartbeat repeatedly before either timeout", function() {
+        withStubbedProxyActivities(function(stubbedWorkflows, seenOptions) {
+            stubbedWorkflows.createExecuteNode("n1", 1, {}, undefined, 1800000);
+            seenOptions[0].heartbeatTimeout.should.be.below(seenOptions[0].startToCloseTimeout);
+        });
+    });
+
+    it("does not change existing ActivityOptions (activityId, summary, retry, startToCloseTimeout) when adding heartbeatTimeout", function() {
+        withStubbedProxyActivities(function(stubbedWorkflows, seenOptions) {
+            stubbedWorkflows.createExecuteNode("n1", 1, { n1: { type: "delay", name: "wait" } }, "custom-q", 1800000);
+            var options = seenOptions[0];
+            options.activityId.should.equal("node:n1:1");
+            options.summary.should.equal("delay — wait");
+            options.taskQueue.should.equal("custom-q");
+            options.startToCloseTimeout.should.equal(1805000);
+            options.retry.should.eql({ maximumAttempts: 3, initialInterval: "1s", backoffCoefficient: 2 });
+        });
+    });
+});
