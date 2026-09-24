@@ -1212,3 +1212,323 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #88: hea
         });
     });
 });
+describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #89: suspension/resume ABI", function() {
+    function deferred() {
+        var resolve;
+        var promise = new Promise(function(r) { resolve = r; });
+        return { promise: promise, resolve: resolve };
+    }
+
+    it("a suspension result routes to a resume Activity call carrying {nodeId, msg, resume:{type, continuation}}, and its sends continue routing normally", function() {
+        var timerGate = deferred();
+        var calls = [];
+        var executeNode = function(input) {
+            calls.push(input);
+            if (input.nodeId === "n1" && !input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "timer", durationMs: 60000, continuation: { step: 1 } } });
+            }
+            if (input.nodeId === "n1" && input.resume) {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "n2", msg: { payload: "resumed" } }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        var sleepFn = function(ms) { timerGate.ms = ms; return timerGate.promise; };
+        var runP = runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: { payload: 0 },
+            sleepFn: sleepFn,
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        });
+        timerGate.resolve();
+        return runP.then(function(output) {
+            output.lastNode.should.equal("n2");
+            calls.length.should.equal(3);
+            calls[0].should.eql({ flowVersion: "v1", nodeId: "n1", msg: { payload: 0 } });
+            calls[1].nodeId.should.equal("n1");
+            calls[1].msg.should.eql({ payload: 0 });
+            calls[1].resume.should.eql({ type: "timer", continuation: { step: 1 } });
+            calls[2].nodeId.should.equal("n2");
+            timerGate.ms.should.equal(60000);
+        });
+    });
+
+    it("a signal suspension whose key is already in the inbox BEFORE the wait resolves immediately, without ever calling conditionFn (signal-before-wait)", function() {
+        var conditionCalls = 0;
+        var inbox = new Map();
+        inbox.set("approval:1", { approved: true });
+        var executeNode = function(input) {
+            if (input.nodeId === "n1" && !input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "signal", key: "approval:1", continuation: { c: 1 } } });
+            }
+            if (input.nodeId === "n1" && input.resume) {
+                return Promise.resolve({ sends: [] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: { payload: 0 },
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { conditionCalls += 1; return Promise.resolve(); },
+            signalInbox: inbox
+        }).then(function(output) {
+            output.lastNode.should.equal("n1");
+            conditionCalls.should.equal(0);
+        });
+    });
+
+    it("a signal suspension whose key arrives AFTER the wait has started still wakes it (signal-after-wait), and the resume Activity receives the delivered signal payload", function() {
+        var inbox = new Map();
+        var conditionGate = deferred();
+        var resumeInputs = [];
+        var executeNode = function(input) {
+            if (input.nodeId === "n1" && !input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "signal", key: "approval:2", continuation: { c: 2 } } });
+            }
+            if (input.nodeId === "n1" && input.resume) {
+                resumeInputs.push(input);
+                return Promise.resolve({ sends: [] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        var runP = runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: { payload: 0 },
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { return conditionGate.promise; },
+            signalInbox: inbox
+        });
+        // simulate the signal arriving after the wait already started
+        inbox.set("approval:2", { approvedBy: "bob" });
+        conditionGate.resolve();
+        return runP.then(function() {
+            resumeInputs.length.should.equal(1);
+            resumeInputs[0].resume.should.eql({ type: "signal", continuation: { c: 2 }, signal: { approvedBy: "bob" } });
+        });
+    });
+
+    it("unrelated signal keys do not wake an unrelated suspension", function() {
+        var inbox = new Map();
+        var conditionCheck;
+        var executeNode = function(input) {
+            if (input.nodeId === "n1" && !input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "signal", key: "approval:mine", continuation: {} } });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        inbox.set("approval:other", { irrelevant: true });
+        var settled = false;
+        var runP = runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: {},
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function(predicate) {
+                conditionCheck = predicate;
+                predicate().should.equal(false); // unrelated key present, own key absent
+                return new Promise(function() {}); // never resolves in this test
+            },
+            signalInbox: inbox
+        });
+        runP.then(function() { settled = true; });
+        return new Promise(function(resolve) { setTimeout(resolve, 10); }).then(function() {
+            settled.should.equal(false);
+            should.exist(conditionCheck);
+        });
+    });
+
+    it("duplicate signal delivery for the same key is deterministic: the LAST delivered value wins (Map.set overwrite)", function() {
+        var inbox = new Map();
+        inbox.set("k", "first");
+        inbox.set("k", "second");
+        inbox.get("k").should.equal("second");
+    });
+
+    it("throws a nonRetryable SUSPENSION_INVALID ApplicationFailure for an unknown suspension type, never silently executing locally", function() {
+        var executeNode = function(input) {
+            if (!input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "approval" } });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: {},
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        }).then(function() {
+            should.fail("expected runFlow to throw");
+        }, function(err) {
+            err.type.should.equal("SUSPENSION_INVALID");
+            err.nonRetryable.should.equal(true);
+        });
+    });
+
+    it("throws a nonRetryable SUSPENSION_INVALID ApplicationFailure when a suspension is combined with non-empty sends", function() {
+        var executeNode = function(input) {
+            if (!input.resume) {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "n2", msg: {} }], suspension: { type: "timer", durationMs: 1000 } });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        return runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: {},
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        }).then(function() {
+            should.fail("expected runFlow to throw");
+        }, function(err) {
+            err.type.should.equal("SUSPENSION_INVALID");
+            err.nonRetryable.should.equal(true);
+        });
+    });
+
+    it("propagates a resume Activity's own NODE_ERROR as a nonRetryable ApplicationFailure, same as any other node error", function() {
+        var executeNode = function(input) {
+            if (!input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "timer", durationMs: 1000 } });
+            }
+            return Promise.resolve({ sends: [], error: { code: "NODE_ERROR", nodeId: "n1", message: "resume failed" } });
+        };
+        return runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: {},
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        }).then(function() {
+            should.fail("expected runFlow to throw");
+        }, function(err) {
+            err.type.should.equal("NODE_ERROR");
+            err.nonRetryable.should.equal(true);
+        });
+    });
+
+    it("does not block an unrelated sibling branch: the immediate branch completes while the suspended branch is still waiting, then the suspended branch resumes once released", function() {
+        var timerGate = deferred();
+        var order = [];
+        var executeNode = function(input) {
+            if (input.nodeId === "suspend" && !input.resume) {
+                order.push("suspend:plan");
+                return Promise.resolve({ sends: [], suspension: { type: "timer", durationMs: 172800000, continuation: {} } });
+            }
+            if (input.nodeId === "suspend" && input.resume) {
+                order.push("suspend:resume");
+                return Promise.resolve({ sends: [] });
+            }
+            if (input.nodeId === "b") {
+                order.push("b");
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "c", msg: {} }] });
+            }
+            if (input.nodeId === "c") {
+                order.push("c");
+                return Promise.resolve({ sends: [] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        var runP = runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            initial: [{ nodeId: "b", msg: {} }, { nodeId: "suspend", msg: {} }],
+            sleepFn: function() { return timerGate.promise; },
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        });
+        var immediateSettled = false;
+        return new Promise(function(resolve) { setTimeout(resolve, 20); }).then(function() {
+            // by now, the immediate branch (b -> c) must have fully drained
+            // even though the suspended branch's timer is still pending -
+            // proving a suspended branch never blocks sibling ready work.
+            order.should.containEql("b");
+            order.should.containEql("c");
+            order.should.not.containEql("suspend:resume");
+            timerGate.resolve();
+            return runP;
+        }).then(function(output) {
+            order.should.containEql("suspend:resume");
+            order.indexOf("c").should.be.below(order.indexOf("suspend:resume"));
+        });
+    });
+
+    it("counts a suspend+resume pair as exactly ONE totalExecutions/logical invocation, not two, against maxNodeExecutions", function() {
+        var executeNode = function(input) {
+            if (input.nodeId === "n1" && !input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "timer", durationMs: 1000 } });
+            }
+            if (input.nodeId === "n1" && input.resume) {
+                return Promise.resolve({ sends: [{ port: 0, destinationId: "n2", msg: {} }] });
+            }
+            return Promise.resolve({ sends: [] });
+        };
+        // maxNodeExecutions = 2 must be enough for n1 (suspend+resume, ONE
+        // count) followed by n2 (one count) - if the resume were double
+        // counted this would throw FLOW_EXECUTION_LIMIT.
+        return runFlow({
+            executeNode: executeNode,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: {},
+            maxNodeExecutions: 2,
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        }).then(function(output) {
+            output.lastNode.should.equal("n2");
+        });
+    });
+
+    it("uses a deterministic, distinct resume Activity id suffixed :resume, sharing the SAME invocation number as the original suspending call (createExecuteNode factory path)", function() {
+        var createdOptions = [];
+        var fakeExecuteNode = function() { return function(input) {
+            if (!input.resume) {
+                return Promise.resolve({ sends: [], suspension: { type: "timer", durationMs: 1000 } });
+            }
+            return Promise.resolve({ sends: [] });
+        }; };
+        var createExecuteNodeFactory = function(nodeId, invocation, nodeMeta, taskQueue, nodeExecutionTimeoutMs, isResume) {
+            createdOptions.push({ nodeId: nodeId, invocation: invocation, isResume: !!isResume });
+            return fakeExecuteNode();
+        };
+        return runFlow({
+            createExecuteNode: createExecuteNodeFactory,
+            graph: {},
+            flowVersion: "v1",
+            startNode: "n1",
+            startMsg: {},
+            sleepFn: function() { return Promise.resolve(); },
+            conditionFn: function() { return Promise.resolve(); },
+            signalInbox: new Map()
+        }).then(function() {
+            createdOptions.should.eql([
+                { nodeId: "n1", invocation: 1, isResume: false },
+                { nodeId: "n1", invocation: 1, isResume: true }
+            ]);
+        });
+    });
+});

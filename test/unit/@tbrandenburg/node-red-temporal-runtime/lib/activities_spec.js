@@ -97,4 +97,119 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
             result.handledError.message.should.containEql("boom");
         });
     });
+
+    describe("issue #89: optional suspension adapter seam", function() {
+        function bootWithAdapter(flowFile, suspensionAdapter) {
+            return bootstrap(flowFile).then(function(h) {
+                handle = h;
+                capture = new Capture();
+                capture.install(RED);
+                var executeNode = createExecuteNode({ getNode: h.getNode, flowVersion: h.flowVersion, capture: capture, suspensionAdapter: suspensionAdapter });
+                return { handle: h, executeNode: executeNode };
+            });
+        }
+
+        it("with no adapter installed, a resume input fails loudly (non-retryable) instead of silently executing the node", function() {
+            return bootWith(FLOW).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "m1" }, resume: { type: "timer", continuation: {} } });
+            }).then(function(result) {
+                result.sends.should.eql([]);
+                result.error.code.should.equal("SUSPENSION_UNSUPPORTED");
+                result.error.nodeId.should.equal("n2");
+            });
+        });
+
+        it("with an adapter whose plan() returns null, the node executes exactly as if no adapter were installed", function() {
+            var adapter = { plan: function() { return null; } };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m2" } });
+            }).then(function(result) {
+                should.not.exist(result.error);
+                should.not.exist(result.suspension);
+                result.sends.length.should.equal(1);
+                result.sends[0].msg.payload.should.equal(42);
+            });
+        });
+
+        it("an adapter's plan() may suspend the invocation before the node ever runs, returning {sends: [], suspension}", function() {
+            var planCalls = [];
+            var adapter = {
+                plan: function(node, msg) {
+                    planCalls.push(msg.payload);
+                    return { type: "timer", durationMs: 60000, continuation: { resumeAt: "later" } };
+                }
+            };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m3" } });
+            }).then(function(result) {
+                should.not.exist(result.error);
+                result.sends.should.eql([]);
+                result.suspension.should.eql({ type: "timer", durationMs: 60000, continuation: { resumeAt: "later" } });
+                planCalls.should.eql([21]);
+            });
+        });
+
+        it("a malformed suspension from plan() fails loudly (non-retryable SUSPENSION_INVALID), never silently falling back to local execution", function() {
+            var adapter = { plan: function() { return { type: "timer", durationMs: -1 }; } };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m4" } });
+            }).then(function(result) {
+                result.sends.should.eql([]);
+                result.error.code.should.equal("SUSPENSION_INVALID");
+            });
+        });
+
+        it("resume input routes to adapter.resume(node, msg, resume) instead of the normal invocation path", function() {
+            var resumeCalls = [];
+            var adapter = {
+                plan: function() { return { type: "signal", key: "approval:1" }; },
+                resume: function(node, msg, resume) {
+                    resumeCalls.push(resume);
+                    return { sends: [{ port: 0, destinationId: "n3", msg: Object.assign({}, msg, { approved: true }) }] };
+                }
+            };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({
+                    flowVersion: ctx.handle.flowVersion,
+                    nodeId: "n2",
+                    msg: { payload: 21, _msgid: "m5" },
+                    resume: { type: "signal", continuation: { foo: "bar" }, signal: { approvedBy: "alice" } }
+                });
+            }).then(function(result) {
+                should.not.exist(result.error);
+                result.sends.length.should.equal(1);
+                result.sends[0].destinationId.should.equal("n3");
+                result.sends[0].msg.approved.should.equal(true);
+                resumeCalls.length.should.equal(1);
+                resumeCalls[0].should.eql({ type: "signal", continuation: { foo: "bar" }, signal: { approvedBy: "alice" } });
+            });
+        });
+
+        it("adapter output is normalized into the existing Activity result shape (mapSends strips extra fields)", function() {
+            var adapter = {
+                resume: function() {
+                    return { sends: [{ port: 0, destinationId: "n3", msg: { payload: 1 }, extraneous: "drop-me" }] };
+                }
+            };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "m6" }, resume: { type: "timer" } });
+            }).then(function(result) {
+                result.sends.should.eql([{ port: 0, destinationId: "n3", msg: { payload: 1 } }]);
+            });
+        });
+
+        it("a nested suspension returned from adapter.resume() is rejected loudly rather than silently dropped", function() {
+            var adapter = {
+                resume: function() {
+                    return { sends: [], suspension: { type: "timer", durationMs: 1000 } };
+                }
+            };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "m7" }, resume: { type: "timer" } });
+            }).then(function(result) {
+                result.sends.should.eql([]);
+                result.error.code.should.equal("SUSPENSION_INVALID");
+            });
+        });
+    });
 });
