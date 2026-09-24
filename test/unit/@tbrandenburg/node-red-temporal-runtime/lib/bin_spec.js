@@ -571,3 +571,91 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #97 --durable-fixed-delay", function() {
+    var ENV_VAR = "NODE_RED_TEMPORAL_DURABLE_FIXED_DELAY";
+    var originalEnv;
+
+    beforeEach(function() {
+        originalEnv = process.env[ENV_VAR];
+        delete process.env[ENV_VAR];
+    });
+
+    afterEach(function() {
+        if (originalEnv === undefined) {
+            delete process.env[ENV_VAR];
+        } else {
+            process.env[ENV_VAR] = originalEnv;
+        }
+    });
+
+    it("durableFixedDelayFrom defaults to false when neither the flag nor the env var is given", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.durableFixedDelayFrom({}).should.equal(false);
+    });
+
+    it("durableFixedDelayFrom is true when --durable-fixed-delay is given", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.durableFixedDelayFrom({ "durable-fixed-delay": true }).should.equal(true);
+    });
+
+    it("durableFixedDelayFrom falls back to NODE_RED_TEMPORAL_DURABLE_FIXED_DELAY=1 when the flag is not given", function() {
+        process.env[ENV_VAR] = "1";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.durableFixedDelayFrom({}).should.equal(true);
+    });
+
+    it("durableFixedDelayFrom prefers the explicit flag over the env var", function() {
+        process.env[ENV_VAR] = "1";
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.durableFixedDelayFrom({ "durable-fixed-delay": false }).should.equal(false);
+    });
+
+    it("--help lists --durable-fixed-delay", function() {
+        this.timeout(15000); // spawns a real Node process, see other block's comment
+        var out = execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+        out.should.match(/--durable-fixed-delay/);
+    });
+
+    it("worker --role activity threads --durable-fixed-delay into createActivityWorker's options", function() {
+        var workerModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
+        var stub = sinon.stub(workerModule, "createActivityWorker").resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json", "durable-fixed-delay": true }).then(function() {
+            stub.firstCall.args[1].durableFixedDelay.should.equal(true);
+        }).finally(function() {
+            stub.restore();
+            delete require.cache[BIN];
+        });
+    });
+
+    it("worker --role activity defaults durableFixedDelay to false when the flag is not given", function() {
+        var workerModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
+        var stub = sinon.stub(workerModule, "createActivityWorker").resolves({
+            flowVersion: "v1",
+            temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
+            handle: {},
+            worker: { run: sinon.stub().resolves() },
+            stop: sinon.stub().resolves()
+        });
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json" }).then(function() {
+            stub.firstCall.args[1].durableFixedDelay.should.equal(false);
+        }).finally(function() {
+            stub.restore();
+            delete require.cache[BIN];
+        });
+    });
+});

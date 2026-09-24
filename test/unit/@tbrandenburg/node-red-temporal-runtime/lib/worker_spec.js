@@ -13,6 +13,7 @@ var FLOW_CHANGED = path.join(FIXTURES, "four-node-flow.changed.json");
 var FANOUT_FLOW = path.join(FIXTURES, "fanout-flow.json");
 var SCHEDULED_FLOW = path.join(FIXTURES, "scheduled-flow.json");
 var EXTERNAL_SOURCE_FLOW = path.join(FIXTURES, "external-source-flow.json");
+var DELAY_FLOW = path.join(FIXTURES, "delay-flow.json");
 
 // Same "stub the SDK's own entry point via require.cache" convention as
 // bin_spec.js's in-process @temporalio/client stubbing - keeps M3's ingress
@@ -184,6 +185,50 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker", function() {
             return opts.activities.executeNode({ flowVersion: result.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "wm3" } }).then(function(execResult) {
                 should.not.exist(execResult.suspension);
                 execResult.sends[0].msg.payload.should.equal(42);
+                return result.stop();
+            });
+        });
+    });
+
+    it("issue #97: durable fixed Delay is OFF by default - a fixed-Delay node's Activity runs the ordinary local node.receive() path, not a suspension", function() {
+        return createWorker(DELAY_FLOW).then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            var start = Date.now();
+            return opts.activities.executeNode({ flowVersion: result.flowVersion, nodeId: "delay1", msg: { payload: 1, _msgid: "wm-delay-default" } }).then(function(execResult) {
+                var elapsed = Date.now() - start;
+                // fixture's configured delay is 200ms - with the adapter
+                // off, this Activity call actually waits out the stock
+                // node's own local timer instead of returning a suspension.
+                elapsed.should.not.be.below(190);
+                should.not.exist(execResult.suspension);
+                should.not.exist(execResult.error);
+                execResult.sends[0].destinationId.should.equal("n2");
+                return result.stop();
+            });
+        });
+    });
+
+    it("issue #97: options.durableFixedDelay=true opts back into issue #90's durable timer suspension for fixed Delay", function() {
+        return createWorker(DELAY_FLOW, { durableFixedDelay: true }).then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            var start = Date.now();
+            return opts.activities.executeNode({ flowVersion: result.flowVersion, nodeId: "delay1", msg: { payload: 1, _msgid: "wm-delay-optin" } }).then(function(execResult) {
+                var elapsed = Date.now() - start;
+                elapsed.should.be.below(100);
+                should.not.exist(execResult.error);
+                execResult.suspension.type.should.equal("timer");
+                execResult.suspension.durationMs.should.equal(200);
+                return result.stop();
+            });
+        });
+    });
+
+    it("issue #97: an explicit options.suspensionAdapter still wins over options.durableFixedDelay", function() {
+        var fakeAdapter = { plan: function() { return { type: "signal", key: "k", continuation: null }; } };
+        return createWorker(DELAY_FLOW, { durableFixedDelay: true, suspensionAdapter: fakeAdapter }).then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            return opts.activities.executeNode({ flowVersion: result.flowVersion, nodeId: "delay1", msg: { payload: 1, _msgid: "wm-delay-explicit" } }).then(function(execResult) {
+                execResult.suspension.should.eql({ type: "signal", key: "k", continuation: null });
                 return result.stop();
             });
         });
