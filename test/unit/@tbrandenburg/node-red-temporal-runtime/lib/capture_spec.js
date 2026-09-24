@@ -611,7 +611,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
         }).then(function() { capture.uninstall(); });
     });
 
-    describe("issue #90: routeSend() - generic route-only helper, no node.receive()/onComplete involved", function() {
+    describe("issue #90/#91: routeSend() - generic route-only helper, no node.receive()/onComplete involved", function() {
         it("captures a plain node.send() call's resolved destinationId without ever calling receive()", function() {
             var capture = new Capture();
             capture.install(RED);
@@ -656,6 +656,38 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
                 var result = capture.routeSend(p1, msg, function() { p1.send(msg); });
                 (Date.now() - start).should.be.below(50);
                 result.sends.length.should.equal(1);
+            capture.uninstall();
+        });
+
+        it("issue #91: routeSend() routes a directly-called node.send() through preRoute-resolved routing, without invoking node.receive()/onComplete", function() {
+            var capture = new Capture();
+            capture.install(RED);
+            return loadFlow([
+                { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+                { id: "s1", type: "helper" }
+            ]).then(function() {
+                var p1 = helper.getNode("p1");
+                var msg = { payload: "routed", _msgid: "rs-1" };
+                var result = capture.routeSend(p1, msg, function() { p1.send(msg); });
+                result.sends.length.should.equal(1);
+                result.sends[0].destinationId.should.equal("s1");
+                result.sends[0].msg.payload.should.equal("routed");
+                capture.uninstall();
+            });
+        });
+
+        it("issue #91: routeSend() assigns a _msgid when the caller's msg lacks one", function() {
+            var capture = new Capture();
+            capture.install(RED);
+            return loadFlow([
+                { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+                { id: "s1", type: "helper" }
+            ]).then(function() {
+                var p1 = helper.getNode("p1");
+                var msg = { payload: "no-id" };
+                capture.routeSend(p1, msg, function() { p1.send(msg); });
+                msg._msgid.should.be.a.String();
+                msg._msgid.length.should.be.above(0);
                 capture.uninstall();
             });
         });
