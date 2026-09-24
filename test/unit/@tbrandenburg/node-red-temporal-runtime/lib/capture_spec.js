@@ -610,4 +610,54 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
                 });
         }).then(function() { capture.uninstall(); });
     });
+
+    describe("issue #90: routeSend() - generic route-only helper, no node.receive()/onComplete involved", function() {
+        it("captures a plain node.send() call's resolved destinationId without ever calling receive()", function() {
+            var capture = new Capture();
+            capture.install(RED);
+            return loadFlow([
+                { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+                { id: "s1", type: "helper" }
+            ]).then(function() {
+                var p1 = helper.getNode("p1");
+                var msg = { payload: "resumed", _msgid: "r1" };
+                var result = capture.routeSend(p1, msg, function() { p1.send(msg); });
+                result.sends.length.should.equal(1);
+                result.sends[0].destinationId.should.equal("s1");
+                result.sends[0].msg.payload.should.equal("resumed");
+                capture.uninstall();
+            });
+        });
+
+        it("returns sends: [] when fn() sends nothing", function() {
+            var capture = new Capture();
+            capture.install(RED);
+            return loadFlow([
+                { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+                { id: "s1", type: "helper" }
+            ]).then(function() {
+                var p1 = helper.getNode("p1");
+                var result = capture.routeSend(p1, { payload: 1 }, function() {});
+                result.sends.should.eql([]);
+                capture.uninstall();
+            });
+        });
+
+        it("does not require or wait for a done() callback (resolves purely from fn() returning)", function() {
+            var capture = new Capture({ timeoutMs: 50 });
+            capture.install(RED);
+            return loadFlow([
+                { id: "p1", type: "temporal-probe", wires: [["s1"]] },
+                { id: "s1", type: "helper" }
+            ]).then(function() {
+                var p1 = helper.getNode("p1");
+                var msg = { payload: "fast", _msgid: "r2" };
+                var start = Date.now();
+                var result = capture.routeSend(p1, msg, function() { p1.send(msg); });
+                (Date.now() - start).should.be.below(50);
+                result.sends.length.should.equal(1);
+                capture.uninstall();
+            });
+        });
+    });
 });
