@@ -656,7 +656,8 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/capture", function() {
                 var result = capture.routeSend(p1, msg, function() { p1.send(msg); });
                 (Date.now() - start).should.be.below(50);
                 result.sends.length.should.equal(1);
-            capture.uninstall();
+                capture.uninstall();
+            });
         });
 
         it("issue #91: routeSend() routes a directly-called node.send() through preRoute-resolved routing, without invoking node.receive()/onComplete", function() {
