@@ -1531,4 +1531,149 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/workflows - issue #89: sus
             ]);
         });
     });
+
+    describe("issue #91 M6a: consume-once signal delivery policy", function() {
+        it("a later suspension reusing the same key does NOT resume from an already-consumed signal - it blocks until a fresh signal arrives", function() {
+            var inbox = new Map();
+            inbox.set("approval:1", { round: 1 });
+            var resumeInputs = [];
+            var secondGate = deferred();
+            var executeNode = function(input) {
+                if (input.nodeId === "first" && !input.resume) {
+                    return Promise.resolve({ sends: [], suspension: { type: "signal", key: "approval:1", continuation: {} } });
+                }
+                if (input.nodeId === "first" && input.resume) {
+                    resumeInputs.push(input);
+                    return Promise.resolve({ sends: [{ port: 0, destinationId: "second", msg: {} }] });
+                }
+                if (input.nodeId === "second" && !input.resume) {
+                    return Promise.resolve({ sends: [], suspension: { type: "signal", key: "approval:1", continuation: {} } });
+                }
+                if (input.nodeId === "second" && input.resume) {
+                    resumeInputs.push(input);
+                    return Promise.resolve({ sends: [] });
+                }
+                return Promise.resolve({ sends: [] });
+            };
+            var runP = runFlow({
+                executeNode: executeNode,
+                graph: {},
+                flowVersion: "v1",
+                startNode: "first",
+                startMsg: {},
+                sleepFn: function() { return Promise.resolve(); },
+                conditionFn: function(predicate) {
+                    // the second wait for the SAME key must re-register a
+                    // condition (the first consumed the only inbox entry) -
+                    // simulate the fresh signal arriving only once we get
+                    // here for a second time.
+                    if (!predicate()) {
+                        return secondGate.promise;
+                    }
+                    return Promise.resolve();
+                },
+                signalInbox: inbox
+            });
+            return new Promise(function(resolve) { setTimeout(resolve, 10); }).then(function() {
+                resumeInputs.length.should.equal(1);
+                resumeInputs[0].resume.signal.should.eql({ round: 1 });
+                inbox.has("approval:1").should.equal(false);
+                // deliver a genuinely NEW signal for the reused key
+                inbox.set("approval:1", { round: 2 });
+                secondGate.resolve();
+                return runP;
+            }).then(function() {
+                resumeInputs.length.should.equal(2);
+                resumeInputs[1].resume.signal.should.eql({ round: 2 });
+            });
+        });
+
+        it("two concurrent waits sharing the same key: only ONE consumes a given signal delivery (first-registered-wins, no broadcast/double-consume)", function() {
+            var inbox = new Map();
+            var resumeInputs = [];
+            var pending = [];
+            function conditionFn(predicate) {
+                if (predicate()) {
+                    return Promise.resolve();
+                }
+                return new Promise(function(resolve) {
+                    pending.push({ predicate: predicate, resolve: resolve });
+                });
+            }
+            function pump() {
+                pending = pending.filter(function(entry) {
+                    if (entry.predicate()) {
+                        entry.resolve();
+                        return false;
+                    }
+                    return true;
+                });
+            }
+            var executeNode = function(input) {
+                if ((input.nodeId === "a" || input.nodeId === "d") && !input.resume) {
+                    return Promise.resolve({ sends: [], suspension: { type: "signal", key: "shared", continuation: {} } });
+                }
+                if (input.resume) {
+                    resumeInputs.push(input);
+                    return Promise.resolve({ sends: [] });
+                }
+                return Promise.resolve({ sends: [] });
+            };
+            var runP = runFlow({
+                executeNode: executeNode,
+                graph: {},
+                flowVersion: "v1",
+                initial: [{ nodeId: "a", msg: {} }, { nodeId: "d", msg: {} }],
+                sleepFn: function() { return Promise.resolve(); },
+                conditionFn: conditionFn,
+                signalInbox: inbox
+            });
+            var settled = false;
+            runP.then(function() { settled = true; });
+            return new Promise(function(resolve) { setTimeout(resolve, 10); }).then(function() {
+                // only one signal delivered for the shared key
+                inbox.set("shared", { once: true });
+                pump();
+                return new Promise(function(resolve) { setTimeout(resolve, 10); });
+            }).then(function() {
+                // exactly one of the two waiters consumed it; the other
+                // remains blocked (re-registered a fresh condition()) rather
+                // than both resuming off the one delivery.
+                resumeInputs.length.should.equal(1);
+                settled.should.equal(false);
+                inbox.has("shared").should.equal(false);
+                pending.length.should.equal(1);
+            });
+        });
+    });
+
+    describe("issue #91 M6b: reject contradictory Activity outcomes", function() {
+        it("throws a nonRetryable SUSPENSION_WITH_ERROR ApplicationFailure when an Activity result carries BOTH error and suspension, instead of silently suspending", function() {
+            var executeNode = function(input) {
+                if (!input.resume) {
+                    return Promise.resolve({
+                        sends: [],
+                        error: { code: "NODE_ERROR", nodeId: "n1", message: "boom" },
+                        suspension: { type: "signal", key: "k", continuation: {} }
+                    });
+                }
+                return Promise.resolve({ sends: [] });
+            };
+            return runFlow({
+                executeNode: executeNode,
+                graph: {},
+                flowVersion: "v1",
+                startNode: "n1",
+                startMsg: {},
+                sleepFn: function() { return Promise.resolve(); },
+                conditionFn: function() { return Promise.resolve(); },
+                signalInbox: new Map()
+            }).then(function() {
+                should.fail("expected runFlow to throw");
+            }, function(err) {
+                err.type.should.equal("SUSPENSION_WITH_ERROR");
+                err.nonRetryable.should.equal(true);
+            });
+        });
+    });
 });

@@ -153,6 +153,41 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker", function() {
             return result.stop();
         });
     });
+
+    it("issue #91: options.suspensionAdapter (a plain object) is wired straight through to createExecuteNode's suspension seam", function() {
+        var fakeAdapter = { plan: function() { return { type: "signal", key: "k", continuation: null }; } };
+        return createWorker(FLOW, { suspensionAdapter: fakeAdapter }).then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            return opts.activities.executeNode({ flowVersion: result.flowVersion, nodeId: "n2", msg: { payload: 1, _msgid: "wm2" } }).then(function(execResult) {
+                execResult.suspension.should.eql({ type: "signal", key: "k", continuation: null });
+                return result.stop();
+            });
+        });
+    });
+
+    it("issue #91: options.suspensionAdapter (a factory function) is called with THIS Worker's own {capture} instance", function() {
+        var receivedCapture;
+        var factory = function(deps) {
+            receivedCapture = deps.capture;
+            return { plan: function() { return undefined; } };
+        };
+        return createWorker(FLOW, { suspensionAdapter: factory }).then(function(result) {
+            should.exist(receivedCapture);
+            receivedCapture.should.equal(result.capture);
+            return result.stop();
+        });
+    });
+
+    it("issue #91: with no options.suspensionAdapter, executeNode behaves byte-identically to before (undefined adapter)", function() {
+        return createWorker(FLOW).then(function(result) {
+            var opts = createStub.firstCall.args[0];
+            return opts.activities.executeNode({ flowVersion: result.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "wm3" } }).then(function(execResult) {
+                should.not.exist(execResult.suspension);
+                execResult.sends[0].msg.payload.should.equal(42);
+                return result.stop();
+            });
+        });
+    });
 });
 
 describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - toInitial (M3 ingress -> initial mapping)", function() {
