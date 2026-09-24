@@ -218,6 +218,18 @@ accepting the diff. All new code lives in a separate package that depends on ups
   hooked into `preRoute`/`onSend`/`onComplete`, which is why execution is only Temporal-visible there.
   `worker.js` already exposes `createActivityWorker`/`createWorkflowWorker` to split these roles apart
   later; `make run` doesn't use that split today.
+- **Durable fixed Delay is opt-in, not default (issue #97, fixed).** `lib/delaySuspensionAdapter.js`
+  (issue #90) suspends the stock fixed-Delay `delay` node as a durable Temporal timer, but is only
+  installed when `options.durableFixedDelay`/`--durable-fixed-delay` is explicitly set. Reason: each
+  source-ingress event starts its own, independently-addressed Workflow Execution
+  (`worker.js:createOnIngress`'s `ingress-<ts>-<rand>` Workflow ID), so an ordinary message durably
+  suspended in one Workflow Execution and a later stock `reset`/`flush` control message reaching the
+  same live Delay node are almost always separate Workflow Executions with no shared state - exact
+  stock parity would require a durable, cross-Workflow "who is currently suspended here" registry,
+  which this project does not build for one stock node. With the adapter off (default), stock
+  `reset`/`flush` behavior is byte-identical to plain Node-RED; opting in trades that away for
+  durability across a worker restart. See the runtime package README's "Fixed Delay (durable,
+  opt-in)" section for the full tradeoff.
 
 ## Working agreements
 
