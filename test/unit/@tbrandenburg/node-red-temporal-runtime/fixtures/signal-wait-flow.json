@@ -1,0 +1,77 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "Flow 1"
+    },
+    {
+        "id": "n1",
+        "type": "inject",
+        "z": "tab1",
+        "name": "start",
+        "wires": [
+            [
+                "wait1",
+                "n4"
+            ]
+        ],
+        "x": 100,
+        "y": 100
+    },
+    {
+        "id": "wait1",
+        "type": "change",
+        "z": "tab1",
+        "name": "wait for signal",
+        "rules": [],
+        "action": "set",
+        "property": "payload",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "wires": [
+            [
+                "n2"
+            ]
+        ],
+        "x": 180,
+        "y": 100
+    },
+    {
+        "id": "n2",
+        "type": "debug",
+        "z": "tab1",
+        "name": "out",
+        "wires": [],
+        "x": 260,
+        "y": 100
+    },
+    {
+        "id": "n3",
+        "type": "debug",
+        "z": "tab1",
+        "name": "sibling out",
+        "wires": [],
+        "x": 260,
+        "y": 180
+    },
+    {
+        "id": "n4",
+        "type": "change",
+        "z": "tab1",
+        "name": "sibling",
+        "rules": [],
+        "action": "set",
+        "property": "payload",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "wires": [
+            [
+                "n3"
+            ]
+        ],
+        "x": 180,
+        "y": 180
+    }
+]
