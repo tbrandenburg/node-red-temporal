@@ -248,13 +248,13 @@ stop:
 ## applies now that `make run` boots a real editor. Open the editor and
 ## press Deploy/Inject instead.
 start:
-	@echo "make start was removed (issue #43): open the editor at http://localhost:$(EDITOR_PORT)" >&2
+	@echo "make start was removed: open the editor at http://localhost:$(EDITOR_PORT)" >&2
 	@echo "and use its Deploy button / Inject nodes instead of a CLI trigger." >&2
 	@exit 1
 
 ## demo-run/demo-start/demo-status/demo-stop: renamed (issue #43)
 demo-run demo-start demo-status demo-stop:
-	@echo "'make $@' was renamed to 'make $(subst demo-,,$@)' (issue #43): see AGENTS.md/README.md." >&2
+	@echo "'make $@' was renamed to 'make $(subst demo-,,$@)': see AGENTS.md/README.md." >&2
 	@exit 1
 
 # --- Docker dev onboarding (issue #52) ---------------------------------
