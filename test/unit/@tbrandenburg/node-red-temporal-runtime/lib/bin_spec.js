@@ -207,6 +207,8 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         out.should.match(/--activity-task-queue/);
         out.should.match(/--admin-port/);
         out.should.match(/--admin-host/);
+        out.should.match(/--runtime-http-port/);
+        out.should.match(/--runtime-http-host/);
     });
 });
 
@@ -229,6 +231,40 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         }, function(err) {
             err.message.should.match(/--admin-port must be a non-negative integer/);
         });
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #102 --runtime-http-port/--runtime-http-host", function() {
+    it("worker --role workflow --runtime-http-port rejects (the workflow role never boots Node-RED)", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "workflow", "runtime-http-port": "1882" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--runtime-http-port is not supported for --role workflow/);
+        });
+    });
+
+    it("worker --role activity --runtime-http-port with a non-numeric value rejects with a clear error", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        return bin.runWorker({ role: "activity", flow: "/tmp/does-not-matter.json", "runtime-http-port": "not-a-port" }).then(function() {
+            throw new Error("expected runWorker to reject");
+        }, function(err) {
+            err.message.should.match(/--runtime-http-port must be a non-negative integer/);
+        });
+    });
+
+    it("runtimeHttpOptionsFrom returns undefined when --runtime-http-port is not given", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        should.not.exist(bin.runtimeHttpOptionsFrom({}));
+    });
+
+    it("runtimeHttpOptionsFrom translates --runtime-http-port/--runtime-http-host into {port, host}", function() {
+        delete require.cache[BIN];
+        var bin = require(BIN);
+        bin.runtimeHttpOptionsFrom({ "runtime-http-port": "1882", "runtime-http-host": "0.0.0.0" }).should.deepEqual({ port: 1882, host: "0.0.0.0" });
     });
 });
 
