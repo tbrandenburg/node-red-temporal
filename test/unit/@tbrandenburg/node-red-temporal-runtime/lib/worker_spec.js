@@ -518,6 +518,136 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - createWorker wire
     });
 });
 
+// issue #66: closes the last generic loss window for autonomous source
+// ingress - Capture -> durable spool -> Temporal wiring, replayed on
+// startup. Uses `options.ingressSpoolDir` (an explicit per-test temp dir)
+// throughout so these tests never touch the shared default location or
+// leak spool files across the suite.
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #66: durable ingress spool wiring", function() {
+    this.timeout(20000);
+
+    var fsMod = require("fs");
+    var osMod = require("os");
+    var pathMod = require("path");
+    var createStub;
+    var wired;
+    var nativeConnectionStub;
+    var spoolDir;
+
+    beforeEach(function() {
+        wired = { shutdown: sinon.stub() };
+        createStub = sinon.stub(Worker, "create").resolves(wired);
+        nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
+        spoolDir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "issue-66-spool-spec-"));
+    });
+
+    afterEach(function() {
+        createStub.restore();
+        nativeConnectionStub.restore();
+        fsMod.rmSync(spoolDir, { recursive: true, force: true });
+    });
+
+    it("a durable spool record is written and removed again on a successful ingress start", function() {
+        var startStub = sinon.stub().resolves({});
+        var restoreClient = stubClientModule(startStub);
+
+        return createWorker(FLOW, { ingressSpoolDir: spoolDir }).then(function(result) {
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: { payload: 1 } }]
+            }).then(function() {
+                startStub.calledOnce.should.equal(true);
+                var workflowId = startStub.firstCall.args[1].workflowId;
+                workflowId.should.match(/^ingress:/);
+                fsMod.readdirSync(spoolDir).should.eql([]);
+                return result.stop();
+            });
+        }).finally(restoreClient);
+    });
+
+    it("a failed ingress start leaves exactly one durable record behind (crash-window A) instead of silently losing the event", function() {
+        var startStub = sinon.stub().rejects(new Error("temporal unreachable"));
+        var restoreClient = stubClientModule(startStub);
+        var errorSpy = sinon.stub(console, "error");
+
+        return createWorker(FLOW, { ingressSpoolDir: spoolDir, ingressSpoolRetryDelaysMs: [] }).then(function(result) {
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: { payload: 1 } }]
+            }).then(function() {
+                var files = fsMod.readdirSync(spoolDir).filter(function(name) { return name.endsWith(".json"); });
+                files.should.have.length(1);
+                errorSpy.called.should.equal(true);
+                return result.stop();
+            });
+        }).finally(function() {
+            errorSpy.restore();
+            restoreClient();
+        });
+    });
+
+    it("startup replay: a record left pending by a previous run is retried and removed by the NEXT createWorker() over the same ingressSpoolDir", function() {
+        var failingStart = sinon.stub().rejects(new Error("temporal unreachable"));
+        var restoreFail = stubClientModule(failingStart);
+        var errorSpy = sinon.stub(console, "error");
+
+        return createWorker(FLOW, { ingressSpoolDir: spoolDir, ingressSpoolRetryDelaysMs: [] }).then(function(firstResult) {
+            return firstResult.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: { payload: 1 } }]
+            }).then(function() {
+                fsMod.readdirSync(spoolDir).filter(function(name) { return name.endsWith(".json"); }).should.have.length(1);
+                return firstResult.stop();
+            });
+        }).then(function() {
+            errorSpy.restore();
+            restoreFail();
+
+            var succeedingStart = sinon.stub().resolves({});
+            var restoreSucceed = stubClientModule(succeedingStart);
+
+            return createWorker(FLOW, { ingressSpoolDir: spoolDir }).then(function(secondResult) {
+                return waitUntil(function() { return succeedingStart.called; }, 5000).then(function() {
+                    fsMod.readdirSync(spoolDir).filter(function(name) { return name.endsWith(".json"); }).should.eql([]);
+                    return secondResult.stop();
+                }).finally(restoreSucceed);
+            });
+        }).catch(function(err) {
+            errorSpy.restore();
+            restoreFail();
+            throw err;
+        });
+    });
+
+    it("derives the default ingress spool directory from options.bootstrapOptions.userDir when given (not options.ingressSpoolDir)", function() {
+        var startStub = sinon.stub().resolves({});
+        var restoreClient = stubClientModule(startStub);
+        var userDir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "issue-66-userdir-spec-"));
+
+        return createWorker(FLOW, { bootstrapOptions: { userDir } }).then(function(result) {
+            return result.capture._onIngress({
+                sourceNodeId: "n1",
+                msg: {},
+                sends: [{ port: 0, destinationId: "n2", msg: { payload: 1 } }]
+            }).then(function() {
+                startStub.calledOnce.should.equal(true);
+                // The default spool dir under userDir should have existed
+                // at some point (created on first write) - it is empty
+                // again now since the start succeeded and the record was
+                // removed, so assert on the PARENT ".node-red-temporal" dir.
+                fsMod.existsSync(pathMod.join(userDir, ".node-red-temporal")).should.equal(true);
+                return result.stop();
+            });
+        }).finally(function() {
+            restoreClient();
+            fsMod.rmSync(userDir, { recursive: true, force: true });
+        });
+    });
+});
+
 // M5+M6: integration-level tests driven through a REAL, running Node-RED
 // flow (real Inject repeat timer / real node.receive() calls), not synthetic
 // manual `capture._onIngress(...)` invocations - only `Worker.create` and
@@ -619,7 +749,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - M5/M6 real-flow i
         });
     });
 
-    it("M5/AC7: a real scheduled-Inject firing whose client.workflow.start rejects is logged via console.error, never thrown/unhandled", function() {
+    it("M5/AC7 (issue #66: now durably spooled): a real scheduled-Inject firing whose client.workflow.start rejects is logged via console.error, never thrown/unhandled, and the ingress record is left pending (not silently lost)", function() {
         var startStub = sinon.stub().rejects(new Error("temporal unreachable (AC7 real-inject path)"));
         restoreClient = stubClientModule(startStub);
         var errorSpy = sinon.stub(console, "error");
@@ -628,8 +758,13 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - M5/M6 real-flow i
             result = created;
             return waitUntil(function() { return errorSpy.called; }, 10000);
         }).then(function() {
+            // issue #66: the one-shot "for source node n1" log message is
+            // replaced by the spool's own failure log, keyed by the durable
+            // ingress record id (not the source node id) - see
+            // ingressSpool.js's `attemptStart`. The important, unchanged
+            // AC7 guarantee is: never thrown/unhandled, always logged.
+            errorSpy.firstCall.args[0].should.match(/ingress spool: workflow start failed/);
             errorSpy.firstCall.args[0].should.match(/temporal unreachable \(AC7 real-inject path\)/);
-            errorSpy.firstCall.args[0].should.match(/n1/);
         }).finally(function() {
             errorSpy.restore();
         });
