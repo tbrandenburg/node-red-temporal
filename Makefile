@@ -208,7 +208,7 @@ status:
 		echo "process not running"; \
 	fi
 	@curl -sf -o /dev/null http://$(ADMIN_HOST):$(ADMIN_PORT)/flows && echo "admin API reachable" || echo "admin API not reachable"
-	@echo "--- Runner B runtime HTTP (issue #102, :$(RUNTIME_HTTP_PORT)) ---"
+	@echo "--- Runner B runtime HTTP (:$(RUNTIME_HTTP_PORT)) ---"
 	@code="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:$(RUNTIME_HTTP_PORT)/ 2>/dev/null)"; \
 	if [ "$$code" = "000" ] || [ -z "$$code" ]; then \
 		echo "runtime HTTP not reachable"; \
@@ -321,7 +321,7 @@ docker-run:
 	@$(COMPOSE) exec -T dev make run
 	@echo ""
 	@echo "Node-RED editor : http://localhost:$(EDITOR_PORT)"
-	@echo "Runner B runtime HTTP (issue #102, public by default): http://localhost:$(RUNTIME_HTTP_PORT)"
+	@echo "Runner B runtime HTTP (public by default): http://localhost:$(RUNTIME_HTTP_PORT)"
 	@echo "Temporal UI     : http://localhost:8233"
 
 ## docker-run-expose-runner: OBSOLETE (issue #102 fixed). Runner B's Admin
@@ -331,7 +331,7 @@ docker-run:
 ## (ADMIN_PORT, loopback-only, unchanged). This target is kept only as a
 ## thin pointer to the new default; it no longer does anything beyond that.
 docker-run-expose-runner:
-	@echo "'make docker-run-expose-runner' is obsolete (issue #102): 'make docker-run' now" >&2
+	@echo "'make docker-run-expose-runner' is obsolete: 'make docker-run' now" >&2
 	@echo "publishes the runtime HTTP listener (port $(RUNTIME_HTTP_PORT)) by default without" >&2
 	@echo "exposing the Admin API. Use 'make docker-run' instead." >&2
 	@exit 1
