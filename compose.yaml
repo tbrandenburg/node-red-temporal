@@ -110,14 +110,21 @@ services:
       TEMPORAL_NAMESPACE: default
     ports:
       - "1880:1880"
-      # loopback-only (issue #79 quick fix): runner B's admin API (1881)
-      # binds to 127.0.0.1 *inside* the container by default (ADMIN_HOST,
-      # Makefile), so this publish only ever matters when explicitly
-      # unblocked via `make docker-run-expose-runner` (ADMIN_HOST=0.0.0.0).
-      # Restricting the publish to the host's own loopback keeps that
-      # unauthenticated admin API + runtime routes off the LAN even then -
-      # see `docker-run-expose-runner`'s docblock for the full rationale.
+      # loopback-only: runner B's Admin API (1881) binds to 127.0.0.1
+      # *inside* the container by default (ADMIN_HOST, Makefile) and has no
+      # auth of its own, so this publish is restricted to the host's own
+      # loopback - never the LAN.
       - "127.0.0.1:1881:1881"
+      # issue #102: runner B's runtime HTTP listener (stock HTTP In/
+      # Response, Dashboard 2.0, WebSocket upgrade, contrib RED.httpNode
+      # routes) - a SEPARATE server from the Admin API above, bound to
+      # 0.0.0.0 *inside* the container by default (RUNTIME_HTTP_HOST,
+      # Makefile) and published to the host's public interface here. This
+      # is the fix for the split issue #79's PoC set out to prove: stock
+      # HTTP-triggered flows (e.g. `/summarize`, `/customer-request`) are
+      # host-reachable at `http://localhost:1882/...` without ever exposing
+      # the Admin API.
+      - "1882:1882"
     depends_on:
       temporal:
         condition: service_healthy

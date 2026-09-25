@@ -34,6 +34,14 @@ RUNNER_USERDIR := .node-red-temporal/runner-userdir
 EDITOR_PORT    := 1880
 ADMIN_PORT     := 1881
 ADMIN_HOST     := 127.0.0.1
+# issue #102: runner B's runtime HTTP listener (stock HTTP In/Response,
+# Dashboard 2.0, WebSocket upgrade, contrib RED.httpNode routes), split away
+# from ADMIN_PORT/ADMIN_HOST above so it can be bound to a public/
+# Docker-reachable interface WITHOUT also exposing the Admin API - the
+# actual problem issue #79's PoC set out to solve. Public-by-design default
+# (0.0.0.0), unlike ADMIN_HOST's loopback-only default.
+RUNTIME_HTTP_PORT := 1882
+RUNTIME_HTTP_HOST := 0.0.0.0
 NODE_TIMEOUT_MS ?= 1800000
 
 PID_DIR        := /tmp/node-red-temporal-run
@@ -139,9 +147,10 @@ run: build
 	if [ -f $(RUNNER_PID) ] && kill -0 "$$(cat $(RUNNER_PID))" 2>/dev/null; then \
 		echo "Runner B already running (pid $$(cat $(RUNNER_PID)))"; \
 	else \
-		echo "Starting runner B (admin API on $(ADMIN_HOST):$(ADMIN_PORT)) seeded from $$seed_flow..."; \
+		echo "Starting runner B (admin API on $(ADMIN_HOST):$(ADMIN_PORT), runtime HTTP on $(RUNTIME_HTTP_HOST):$(RUNTIME_HTTP_PORT)) seeded from $$seed_flow..."; \
 		setsid node $(CLI) worker --role activity --flow "$$seed_flow" \
 			--admin-port $(ADMIN_PORT) --admin-host $(ADMIN_HOST) \
+			--runtime-http-port $(RUNTIME_HTTP_PORT) --runtime-http-host $(RUNTIME_HTTP_HOST) \
 			--user-dir $(RUNNER_USERDIR) \
 			--node-timeout-ms $(NODE_TIMEOUT_MS) \
 			> $(RUNNER_LOG) 2>&1 < /dev/null & echo $$! > $(RUNNER_PID); \
@@ -167,6 +176,7 @@ run: build
 	@for entry in \
 		"Editor A (design time, press Deploy)|http://localhost:$(EDITOR_PORT)" \
 		"Runner B admin API                  |http://$(ADMIN_HOST):$(ADMIN_PORT)" \
+		"Runner B runtime HTTP               |http://$(RUNTIME_HTTP_HOST):$(RUNTIME_HTTP_PORT)" \
 		"Temporal Web UI                     |http://localhost:8233" \
 	; do \
 		label="$${entry%%|*}"; \
@@ -198,6 +208,13 @@ status:
 		echo "process not running"; \
 	fi
 	@curl -sf -o /dev/null http://$(ADMIN_HOST):$(ADMIN_PORT)/flows && echo "admin API reachable" || echo "admin API not reachable"
+	@echo "--- Runner B runtime HTTP (issue #102, :$(RUNTIME_HTTP_PORT)) ---"
+	@code="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:$(RUNTIME_HTTP_PORT)/ 2>/dev/null)"; \
+	if [ "$$code" = "000" ] || [ -z "$$code" ]; then \
+		echo "runtime HTTP not reachable"; \
+	else \
+		echo "runtime HTTP reachable (status $$code)"; \
+	fi
 	@echo "--- Editor A (pid + editor :$(EDITOR_PORT)) ---"
 	@if [ -f $(EDITOR_PID) ] && kill -0 "$$(cat $(EDITOR_PID))" 2>/dev/null; then \
 		echo "process running (pid $$(cat $(EDITOR_PID)))"; \
@@ -253,11 +270,14 @@ demo-run demo-start demo-status demo-stop:
 # Inside the `dev` container this is fine and unchanged - editor A and
 # runner B both run inside the SAME container and talk to each other over
 # its own loopback, exactly like the non-Docker lifecycle. Docker's
-# `1881:1881` port publish (compose.yaml) cannot reach a loopback-only bind
-# from the host, but the issue's acceptance criteria only requires the
-# editor (1880) and Temporal UI (8233) to be host-reachable, and Deploy
-# works end-to-end through 1880 without host access to 1881. ADMIN_HOST is
-# therefore left untouched - making it host-reachable is unneeded scope.
+# `127.0.0.1:1881:1881` port publish (compose.yaml) cannot reach a
+# loopback-only bind from the host, and that's intentional: the Admin API
+# has no auth of its own. issue #102 fixed the actual operational problem
+# this used to force a tradeoff on - runner B's runtime HTTP listener
+# (RUNTIME_HTTP_HOST := 0.0.0.0, RUNTIME_HTTP_PORT := 1882) is a SEPARATE
+# server from the Admin API, published on compose.yaml's public interface,
+# so stock HTTP-triggered flows are host-reachable at
+# `http://localhost:1882/...` without ever exposing the Admin API.
 
 COMPOSE := docker compose
 
@@ -301,55 +321,20 @@ docker-run:
 	@$(COMPOSE) exec -T dev make run
 	@echo ""
 	@echo "Node-RED editor : http://localhost:$(EDITOR_PORT)"
+	@echo "Runner B runtime HTTP (issue #102, public by default): http://localhost:$(RUNTIME_HTTP_PORT)"
 	@echo "Temporal UI     : http://localhost:8233"
 
-## docker-run-expose-runner: like `docker-run`, but starts runner B with
-## ADMIN_HOST=0.0.0.0 (Makefile default is 127.0.0.1 - loopback-only INSIDE
-## the container, unreachable via Docker's port publish; see the ADMIN_HOST
-## decision comment further down this file). This is a quick, explicit
-## unblocker (issue #79) for iterating on stock HTTP-triggered flows
-## (e.g. `/summarize`, `/customer-request`) without a `docker compose exec`
-## wrapper on every curl - NOT a change to `docker-run`'s normal, safer
-## default.
-##
-## compose.yaml publishes 1881 as `127.0.0.1:1881:1881` (host-loopback-only,
-## never the LAN), so after this target:
-##   curl http://localhost:1881/summarize
-## works directly from the host.
-##
-## Explicit, opt-in, and deliberately narrow: runner B's admin API has NO
-## authentication and also carries the runtime's own HTTP-triggered routes
-## on the SAME port - anything reachable at localhost:1881 can redeploy
-## flows, read/write context, etc. Only use this on a trusted single-user
-## host, only for as long as you need it, and prefer `make docker-stop` (or
-## re-running plain `make docker-run`, which restarts runner B back on
-## ADMIN_HOST=127.0.0.1) once you're done.
-##
-## Long-term fix tracked as issue #79 -> #80 (split runner B into a private
-## control-plane port and a proper, separately-exposable runtime data-plane
-## port) - this target is meant to be deleted once that lands.
+## docker-run-expose-runner: OBSOLETE (issue #102 fixed). Runner B's Admin
+## API and runtime HTTP surface are now two independent servers by default -
+## `docker-run` above already publishes the runtime HTTP listener
+## (RUNTIME_HTTP_PORT, public-by-design) without exposing the Admin API
+## (ADMIN_PORT, loopback-only, unchanged). This target is kept only as a
+## thin pointer to the new default; it no longer does anything beyond that.
 docker-run-expose-runner:
-	@$(COMPOSE) up -d --build postgres temporal temporal-ui dev
-	@echo "Waiting for temporal and dev services..."
-	@i=0; \
-	while [ $$i -lt 60 ]; do \
-		temporal_health=$$($(COMPOSE) ps --format json temporal 2>/dev/null | grep -o '"Health":"[a-z]*"' | head -1); \
-		dev_state=$$($(COMPOSE) ps --format json dev 2>/dev/null | grep -o '"State":"[a-z]*"' | head -1); \
-		if echo "$$temporal_health" | grep -q healthy && echo "$$dev_state" | grep -q running; then \
-			echo "temporal healthy, dev running"; \
-			break; \
-		fi; \
-		i=$$((i+1)); \
-		sleep 2; \
-	done
-	@$(COMPOSE) exec -T -u root dev chown -R "$(USER_UID):$(USER_GID)" /workspace/node_modules
-	@$(COMPOSE) exec -T dev make stop
-	@$(COMPOSE) exec -T dev make run ADMIN_HOST=0.0.0.0
-	@echo ""
-	@echo "⚠️  Runner B admin API + runtime routes exposed on host loopback only (issue #79 quick fix)"
-	@echo "Node-RED editor      : http://localhost:$(EDITOR_PORT)"
-	@echo "Runner B (loopback)  : http://localhost:$(ADMIN_PORT)"
-	@echo "Temporal UI          : http://localhost:8233"
+	@echo "'make docker-run-expose-runner' is obsolete (issue #102): 'make docker-run' now" >&2
+	@echo "publishes the runtime HTTP listener (port $(RUNTIME_HTTP_PORT)) by default without" >&2
+	@echo "exposing the Admin API. Use 'make docker-run' instead." >&2
+	@exit 1
 
 ## docker-run-external: start ONLY the `dev` service (never postgres/temporal/
 ## temporal-ui) and boot editor A + runner B inside it against an externally
