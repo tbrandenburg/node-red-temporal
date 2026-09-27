@@ -125,6 +125,29 @@ describe("@tbrandenburg/node-red-temporal-runtime - issue #15 Node-RED storage/d
         });
     });
 
+    it("issue #105: flowVersion also updates after a redeploy that bypasses handle.deploy() (e.g. a real external Admin API POST /flows), not only after handle.deploy() itself", function() {
+        // eslint-disable-next-line global-require
+        var runtime = require("../../../../../packages/node_modules/@node-red/runtime");
+        var newFlow = JSON.parse(fs.readFileSync(FLOW_CHANGED, "utf8"));
+        return bootstrap(FLOW).then(function(h) {
+            handle = h;
+            var originalVersion = handle.flowVersion;
+            // Drives runtime.flows.setFlows() directly, exactly like
+            // @node-red/editor-api's own POST /flows route handler does for
+            // a real external editor's Deploy button - never through this
+            // module's own `deploy()` wrapper.
+            return runtime.flows.setFlows({ flows: { flows: newFlow }, deploymentType: "full" }).then(function() {
+                return waitUntil(function() { return handle.flowVersion !== originalVersion; });
+            }).then(function() {
+                handle.flowVersion.should.not.equal(originalVersion);
+                handle.getFlowVersion().should.equal(handle.flowVersion);
+                var n2 = handle.getNode("n2");
+                should.exist(n2);
+                n2.name.should.equal("triple");
+            });
+        });
+    });
+
     it("deploy() actually changes runtime node behavior end-to-end (double -> triple) when driven through the live node", function() {
         var newFlow = JSON.parse(fs.readFileSync(FLOW_CHANGED, "utf8"));
         return bootstrap(FLOW).then(function(h) {
