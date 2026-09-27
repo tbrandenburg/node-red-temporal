@@ -308,6 +308,16 @@ Point an ordinary Node-RED editor (A) at it via `settings.js`'s `storageModule`
 Full onboarding steps, config example, and revert instructions: see the
 [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#use-an-existing-node-red-editor-with-a-temporal-runtime-issue-39).
 
+### Manual immutable A/B redeploy (issue #105)
+
+Keep A immutable/running. Start NEW runner B with a different `--flow`,
+`--activity-task-queue`, `--user-dir`/ports; verify B with an explicit
+`start` before touching the editor. Regenerate A's editor settings with
+`run/generate-editor-settings.js --target <B admin URL>` using the SAME
+editor `--user-dir`, restart the editor; Deploy sends B new explicit starts.
+Leave A alive until its known Workflows finish, then stop A manually.
+Autonomous sources/HTTP clients are **not** covered by this manual handoff.
+
 ## Current work
 
 Milestone plan and acceptance criteria: issue
