@@ -228,7 +228,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #15 redeplo
     var restoreClient;
 
     beforeEach(function() {
-        wired = { shutdown: sinon.stub() };
+        wired = { run: sinon.stub().resolves(), shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
         // issue #16: createActivityWorker/createWorkflowWorker now open a
         // REAL NativeConnection.connect() before Worker.create() (fixes

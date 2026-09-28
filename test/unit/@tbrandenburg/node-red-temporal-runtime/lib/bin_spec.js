@@ -320,7 +320,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             flowVersion: "v1",
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
 
@@ -362,7 +362,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             flowVersion: "v1",
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
 
@@ -458,7 +458,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             flowVersion: "v1",
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
         delete require.cache[BIN];
@@ -563,7 +563,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
             httpIngressAddress: { host: "127.0.0.1", port: 8080 },
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
         delete require.cache[BIN];
@@ -589,7 +589,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
             httpIngressAddress: { host: "127.0.0.1", port: 8080 },
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
         var logSpy = sinon.spy(console, "log");
@@ -663,7 +663,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             flowVersion: "v1",
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
         delete require.cache[BIN];
@@ -682,7 +682,7 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
             flowVersion: "v1",
             temporalConfig: { activityTaskQueue: "q", address: "a", namespace: "n" },
             handle: {},
-            worker: { run: sinon.stub().resolves() },
+            run: sinon.stub().resolves(),
             stop: sinon.stub().resolves()
         });
         delete require.cache[BIN];
