@@ -152,7 +152,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker", function() {
         // SDK's own `Worker.create` (restored in afterEach, scoped to this
         // one test file/run) keeps this test fast while still exercising
         // every real line of `createWorker`'s wiring logic.
-        wired = { shutdown: sinon.stub() };
+        wired = { run: sinon.stub().resolves(), shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
         // issue #21/#16: createActivityWorker/createWorkflowWorker now
         // establish an explicit NativeConnection.connect() before
@@ -396,7 +396,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - createWorker wire
     var nativeConnectionStub;
 
     beforeEach(function() {
-        wired = { shutdown: sinon.stub() };
+        wired = { run: sinon.stub().resolves(), shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
         nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
     });
@@ -580,7 +580,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #66: durabl
     var spoolDir;
 
     beforeEach(function() {
-        wired = { shutdown: sinon.stub() };
+        wired = { run: sinon.stub().resolves(), shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
         nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
         spoolDir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "issue-66-spool-spec-"));
@@ -707,7 +707,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - M5/M6 real-flow i
     var nativeConnectionStub;
 
     beforeEach(function() {
-        wired = { shutdown: sinon.stub() };
+        wired = { run: sinon.stub().resolves(), shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
         nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
         result = null;
@@ -859,7 +859,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #16 role de
     var bootstrapModule = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
 
     beforeEach(function() {
-        wired = { shutdown: sinon.stub() };
+        wired = { run: sinon.stub().resolves(), shutdown: sinon.stub() };
         createStub = sinon.stub(Worker, "create").resolves(wired);
         nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
     });
@@ -1032,6 +1032,115 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #16 role de
     });
 });
 
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #118 shutdown", function() {
+    this.timeout(20000);
+    var worker = require(WORKER_MODULE_PATH);
+    var createStub;
+    var connectStub;
+
+    beforeEach(function() {
+        createStub = sinon.stub(Worker, "create");
+        connectStub = sinon.stub(NativeConnection, "connect");
+    });
+
+    afterEach(function() {
+        createStub.restore();
+        connectStub.restore();
+    });
+
+    for (var role of ["workflow", "activity"]) {
+        it(`${role} stop waits for the SDK run to finish before closing its connection`, async function() {
+            var finishRun;
+            var running = new Promise(function(resolve) { finishRun = resolve; });
+            var sdk = { run: sinon.stub().returns(running), shutdown: sinon.stub() };
+            var connection = { close: sinon.stub().resolves() };
+            createStub.resolves(sdk);
+            connectStub.resolves(connection);
+            var result = role === "workflow" ? await worker.createWorkflowWorker() : await worker.createActivityWorker(FLOW);
+            var run = result.run();
+            var stop = result.stop();
+            var settled = false;
+            stop.finally(function() { settled = true; });
+            await new Promise(function(resolve) { setImmediate(resolve); });
+            sdk.shutdown.calledOnce.should.equal(true);
+            settled.should.equal(false);
+            connection.close.called.should.equal(false);
+            finishRun();
+            await stop;
+            await run;
+            sdk.run.calledOnce.should.equal(true);
+            connection.close.calledOnce.should.equal(true);
+        });
+    }
+
+    it("workflow stop propagates an SDK run failure and still closes the released connection", async function() {
+        var failRun;
+        var running = new Promise(function(resolve, reject) { failRun = reject; });
+        var sdk = { run: sinon.stub().returns(running), shutdown: sinon.stub() };
+        var connection = { close: sinon.stub().resolves() };
+        createStub.resolves(sdk);
+        connectStub.resolves(connection);
+        var result = await worker.createWorkflowWorker();
+        var run = result.run();
+        var stop = result.stop();
+        var failure = new Error("SDK drain failed");
+        failRun(failure);
+        await Promise.all([
+            stop.then(function() { throw new Error("stop unexpectedly succeeded"); }, function(err) { err.should.equal(failure); }),
+            run.then(function() { throw new Error("run unexpectedly succeeded"); }, function(err) { err.should.equal(failure); })
+        ]);
+        connection.close.calledOnce.should.equal(true);
+    });
+
+    it("HTTP bind failure drains the initialized Worker before closing its connection", async function() {
+        var finishRun;
+        var running = new Promise(function(resolve) { finishRun = resolve; });
+        var sdk = { run: sinon.stub().returns(running), shutdown: sinon.stub() };
+        var connection = { close: sinon.stub().resolves() };
+        createStub.resolves(sdk);
+        connectStub.resolves(connection);
+        var blocker = http.createServer();
+        await new Promise(function(resolve) { blocker.listen(0, "127.0.0.1", resolve); });
+        try {
+            var failed = worker.createActivityWorker(FLOW, { httpIngress: { host: "127.0.0.1", port: blocker.address().port } });
+            await waitUntil(function() { return sdk.shutdown.calledOnce; });
+            connection.close.called.should.equal(false);
+            finishRun();
+            await failed.then(function() { throw new Error("expected bind failure"); }, function(err) { err.code.should.equal("EADDRINUSE"); });
+            connection.close.calledOnce.should.equal(true);
+        } finally {
+            await new Promise(function(resolve) { blocker.close(resolve); });
+        }
+    });
+});
+
+// Run against a real dev server: TEMPORAL_SHUTDOWN_TEST_ADDRESS=127.0.0.1:7233
+// ./node_modules/.bin/mocha test/unit/@tbrandenburg/node-red-temporal-runtime/lib/worker_spec.js --grep 'real Temporal restart'
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #118 real Temporal restart", function() {
+    this.timeout(90000);
+
+    it("drains a running Workflow Worker, closes its native connection, and starts a replacement", async function() {
+        if (!process.env.TEMPORAL_SHUTDOWN_TEST_ADDRESS) {
+            this.skip();
+        }
+        var worker = require(WORKER_MODULE_PATH);
+        for (var cycle = 0; cycle < 2; cycle++) {
+            var role = await worker.createWorkflowWorker({ temporal: {
+                address: process.env.TEMPORAL_SHUTDOWN_TEST_ADDRESS,
+                workflowTaskQueue: "issue-118-shutdown-restart"
+            } });
+            var running = role.run();
+            try {
+                await waitUntil(function() { return role.worker.getState() === "RUNNING"; });
+            } finally {
+                await role.stop();
+                await running;
+            }
+            role.worker.getState().should.equal("STOPPED");
+        }
+    });
+});
+
 describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #117 source ownership", function() {
     this.timeout(20000);
     var worker = require(WORKER_MODULE_PATH);
@@ -1039,7 +1148,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #117 source
     var nativeStub;
 
     beforeEach(function() {
-        createStub = sinon.stub(Worker, "create").resolves({ shutdown: sinon.stub() });
+        createStub = sinon.stub(Worker, "create").resolves({ run: sinon.stub().resolves(), shutdown: sinon.stub() });
         nativeStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
     });
 
@@ -1119,7 +1228,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #58 M5 HTTP
     var restoreClient;
 
     beforeEach(function() {
-        createStub = sinon.stub(Worker, "create").resolves({ shutdown: sinon.stub() });
+        createStub = sinon.stub(Worker, "create").resolves({ run: sinon.stub().resolves(), shutdown: sinon.stub() });
         nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
         result = null;
         restoreClient = null;
@@ -1234,7 +1343,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #58 M6 HTTP
     var restoreClient;
 
     beforeEach(function() {
-        createStub = sinon.stub(Worker, "create").resolves({ shutdown: sinon.stub() });
+        createStub = sinon.stub(Worker, "create").resolves({ run: sinon.stub().resolves(), shutdown: sinon.stub() });
         nativeConnectionStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
         result = null;
         restoreClient = null;
