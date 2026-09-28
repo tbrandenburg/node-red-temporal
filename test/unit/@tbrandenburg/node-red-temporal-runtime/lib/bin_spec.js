@@ -695,3 +695,29 @@ describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue 
         });
     });
 });
+
+describe("@tbrandenburg/node-red-temporal-runtime bin/node-red-temporal - issue #117 source ownership", function() {
+    it("parses the ownership flag and documents its default", function() {
+        var bin = require(BIN);
+        bin.parseArgs(["worker", "--source-ownership", "execution-only"])["source-ownership"].should.equal("execution-only");
+        execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" }).should.match(/--source-ownership <owner\|execution-only>/);
+    });
+
+    it("rejects unknown ownership and rejects the flag on a workflow-only role", async function() {
+        var bin = require(BIN);
+        await bin.runWorker({ role: "activity", flow: FLOW, "source-ownership": "invalid" }).should.be.rejectedWith(/--source-ownership/);
+        await bin.runWorker({ role: "workflow", "source-ownership": "execution-only" }).should.be.rejectedWith(/not supported for --role workflow/);
+    });
+
+    it("rejects HTTP listeners on an execution-only runner before starting Node-RED", async function() {
+        var bin = require(BIN);
+        for (var flags of [
+            { "admin-port": "0" },
+            { "runtime-http-port": "0" },
+            { "http-ingress-port": "0" }
+        ]) {
+            await bin.runWorker(Object.assign({ role: "activity", flow: FLOW, "source-ownership": "execution-only" }, flags))
+                .should.be.rejectedWith(/execution-only runners cannot expose/);
+        }
+    });
+});

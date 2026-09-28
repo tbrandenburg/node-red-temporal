@@ -203,6 +203,7 @@ The current alpha supports, among other things:
 - flow redeploy without process restart;
 - explicit `flowVersion` protection for in-flight Workflows;
 - combined or split Workflow/Activity worker processes;
+- explicit single-owner autonomous ingress with execution-only Activity replicas;
 - configurable Temporal address, namespace and task queues;
 - worker restart/recovery.
 
@@ -267,6 +268,8 @@ Node-RED runtime + Activity Worker
 ```
 
 Only the Activity role boots Node-RED and owns source ingress. The Workflow role is deterministic and does not load Node-RED.
+
+When scaling Activity runners for the same flow generation, designate one source owner (`--source-ownership owner`) and start other replicas with `--source-ownership execution-only`. The owner alone originates autonomous ingress; takeover requires fencing the old owner and reusing its persistent ingress spool. See the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#one-source-owner-per-generation-issue-117).
 
 See the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md) for commands and configuration.
 
