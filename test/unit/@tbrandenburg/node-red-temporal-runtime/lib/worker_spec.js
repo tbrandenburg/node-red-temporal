@@ -2,6 +2,7 @@ var should = require("should");
 var path = require("path");
 var fs = require("fs");
 var http = require("http");
+var { execFileSync } = require("child_process");
 var sinon = require("sinon");
 var { Worker, NativeConnection } = require("@temporalio/worker");
 var WORKER_MODULE_PATH = require.resolve("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/worker.js");
@@ -19,6 +20,50 @@ var DELAY_FLOW = path.join(FIXTURES, "delay-flow.json");
 // bin_spec.js's in-process @temporalio/client stubbing - keeps M3's ingress
 // wiring tests fast/deterministic without a live Temporal dev server.
 var CLIENT_PATH = require.resolve("@temporalio/client");
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #116 import boundary", function() {
+    this.timeout(15000);
+
+    it("loads the public worker API and polls the Workflow role without loading Node-RED modules", function() {
+        // A fresh process makes this independent of Node-RED already being in
+        // the test runner's require.cache. Reject even transitive imports.
+        var script = `
+            const assert = require("assert");
+            const Module = require("module");
+            const originalLoad = Module._load;
+            Module._load = function(request, parent, isMain) {
+                if (request.includes("@node-red/") || request.includes("@node-red\\\\")) {
+                    throw new Error("Node-RED import in Workflow role: " + request);
+                }
+                return originalLoad.call(this, request, parent, isMain);
+            };
+            const { Worker, NativeConnection } = require("@temporalio/worker");
+            const connection = { close: async () => {} };
+            let created;
+            NativeConnection.connect = async () => connection;
+            Worker.create = async (options) => {
+                created = options;
+                return { run: async () => {}, shutdown: () => {} };
+            };
+            const worker = require(process.env.WORKER_PATH);
+            assert.equal(typeof worker.createActivityWorker, "function");
+            assert.equal(typeof worker.createCombinedWorker, "function");
+            assert.equal(typeof worker.createNodeRedRuntime, "function");
+            const bin = require(process.env.BIN_PATH);
+            bin.runWorker({ role: "workflow" }).then(() => {
+                assert.equal(created.connection, connection);
+                assert.equal(created.workflowsPath, worker.WORKFLOWS_PATH);
+                assert.equal(created.activities, undefined);
+                assert(!Object.keys(require.cache).some(name => /@node-red[\\/]|node-red-temporal-runtime[\\/]lib[\\/](bootstrap|capture|activities)\\.js/.test(name)));
+            }).catch(err => { console.error(err); process.exitCode = 1; });
+        `;
+        var binPath = path.join(__dirname, "../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/bin/node-red-temporal");
+        var output = execFileSync(process.execPath, ["-e", script], {
+            encoding: "utf8", env: Object.assign({}, process.env, { WORKER_PATH: WORKER_MODULE_PATH, BIN_PATH: binPath }), timeout: 10000
+        });
+        output.should.match(/workflow worker connected/);
+    });
+});
 
 /**
  * M5/M6: installs a fake `@temporalio/client` module (in require.cache) whose
@@ -984,6 +1029,77 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #16 role de
         config.namespace.should.equal(process.env.TEMPORAL_NAMESPACE || "default");
         config.workflowTaskQueue.should.equal(process.env.TEMPORAL_WORKFLOW_TASK_QUEUE || "node-red-temporal");
         config.activityTaskQueue.should.equal(process.env.TEMPORAL_ACTIVITY_TASK_QUEUE || "node-red-temporal");
+    });
+});
+
+describe("@tbrandenburg/node-red-temporal-runtime/lib/worker - issue #117 source ownership", function() {
+    this.timeout(20000);
+    var worker = require(WORKER_MODULE_PATH);
+    var createStub;
+    var nativeStub;
+
+    beforeEach(function() {
+        createStub = sinon.stub(Worker, "create").resolves({ shutdown: sinon.stub() });
+        nativeStub = sinon.stub(NativeConnection, "connect").resolves({ close: sinon.stub().resolves() });
+    });
+
+    afterEach(function() {
+        createStub.restore();
+        nativeStub.restore();
+    });
+
+    it("execution-only boots identical nodes, executes Activities, and suppresses even direct source sends", async function() {
+        var started = sinon.stub().resolves({});
+        var restore = stubClientModule(started);
+        var result;
+        try {
+            result = await worker.createActivityWorker(SCHEDULED_FLOW, { sourceOwnership: "execution-only" });
+            result.sourceOwnership.should.equal("execution-only");
+            result.handle.getNode("n1").should.be.an.Object();
+            result.handle.getNode("n1").send({ payload: "manual-source-send" });
+            await new Promise(function(resolve) { setTimeout(resolve, 1200); });
+            started.called.should.equal(false);
+            var executeNode = createStub.firstCall.args[0].activities.executeNode;
+            var output = await executeNode({ flowVersion: result.flowVersion, nodeId: "n2", msg: { payload: "activity" } });
+            should.not.exist(output.error);
+        } finally {
+            if (result) { await result.stop(); }
+            restore();
+        }
+    });
+
+    it("execution-only does not replay another owner's pending spool records", async function() {
+        var os = require("os");
+        var dir = fs.mkdtempSync(path.join(os.tmpdir(), "issue-117-spool-"));
+        var { writeIngressRecord } = require("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/ingressSpool.js");
+        writeIngressRecord(dir, { id: "pending-owner-event" });
+        var started = sinon.stub().resolves({});
+        var restore = stubClientModule(started);
+        var result;
+        try {
+            result = await worker.createActivityWorker(FLOW, { sourceOwnership: "execution-only", ingressSpoolDir: dir });
+            started.called.should.equal(false);
+            fs.existsSync(path.join(dir, "pending-owner-event.json")).should.equal(true);
+        } finally {
+            if (result) { await result.stop(); }
+            restore();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects unsupported ownership and listeners before booting Node-RED", async function() {
+        for (var opts of [
+            { sourceOwnership: "maybe" },
+            { sourceOwnership: "execution-only", httpIngress: { port: 0 } },
+            { sourceOwnership: "execution-only", bootstrapOptions: { adminApi: { port: 0 } } },
+            { sourceOwnership: "execution-only", bootstrapOptions: { runtimeHttp: { port: 0 } } },
+            { sourceOwnership: "execution-only", captureOptions: { onIngress: function() {} } }
+        ]) {
+            await worker.createActivityWorker(FLOW, opts).then(function() {
+                throw new Error("expected ownership validation failure");
+            }, function(err) { err.message.should.match(/sourceOwnership|execution-only/); });
+        }
+        createStub.called.should.equal(false);
     });
 });
 
