@@ -5,6 +5,8 @@ var { execFileSync } = require("child_process");
 var BOOTSTRAP_MODULE = require.resolve("../../../../../packages/node_modules/@tbrandenburg/node-red-temporal-runtime/lib/bootstrap.js");
 var FLOW = path.join(__dirname, "..", "fixtures", "http-response-flow.json");
 var FIXTURE_NODES_DIR = path.join(__dirname, "..", "fixtures", "nodes", "runtime-httpnode-test");
+var RESOURCE_FIXTURE_DIR = path.join(__dirname, "..", "fixtures", "nodes", "module-resource-test");
+var SCOPED_RESOURCE_DIR = path.join(__dirname, "..", "fixtures", "nodes", "module-resource-scoped-test");
 
 /**
  * issue #102: `options.runtimeHttp` splits `runtime.httpNode`/
@@ -32,7 +34,7 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/bootstrap - options.runtim
             const runtime = require(${JSON.stringify(require.resolve("../../../../../packages/node_modules/@node-red/runtime"))});
             (async () => {
                 const handle = await bootstrap(${JSON.stringify(FLOW)}, {
-                    settings: { nodesDir: [${JSON.stringify(FIXTURE_NODES_DIR)}] },
+                    settings: { nodesDir: [${JSON.stringify(FIXTURE_NODES_DIR)}, ${JSON.stringify(RESOURCE_FIXTURE_DIR)}, ${JSON.stringify(SCOPED_RESOURCE_DIR)}] },
                     adminApi: { port: 0, host: "127.0.0.1" },
                     runtimeHttp: { port: 0, host: "127.0.0.1" }
                 });
@@ -87,6 +89,32 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/bootstrap - options.runtim
                 const fixtureOnAdmin = await fetch(\`\${adminBase}/fixture-runtime-httpnode\`);
                 if (fixtureOnAdmin.status !== 404) {
                     throw new Error("expected GET /fixture-runtime-httpnode on admin server to 404, got " + fixtureOnAdmin.status);
+                }
+
+                // 4. Registered resources are available on both origins,
+                //    but management endpoints stay on Admin only.
+                for (const base of [adminBase, runtimeBase]) {
+                    for (const [resource, expected] of [
+                        ["node-red-temporal-test-module-resource/test-widget.js", "test widget resource for issue #74"],
+                        ["@node-red-temporal-test/module-resource-scoped/test-widget.js", "scoped test widget resource for issue #74"]
+                    ]) {
+                        const response = await fetch(\`\${base}/resources/\${resource}\`);
+                        assert.strictEqual(response.status, 200, resource);
+                        assert.match(response.headers.get("content-type"), /javascript/);
+                        assert.ok((await response.text()).includes(expected));
+                    }
+                }
+                for (const resource of [
+                    "unknown-module/test-widget.js",
+                    "node-red-temporal-test-module-resource/missing.js",
+                    "node-red-temporal-test-module-resource/%2e%2e%2f%2e%2e%2fpackage.json"
+                ]) {
+                    const response = await fetch(\`\${runtimeBase}/resources/\${resource}\`);
+                    assert.strictEqual(response.status, 404, resource);
+                }
+                for (const route of ["/context/global", "/nodes", "/flows"]) {
+                    const response = await fetch(\`\${runtimeBase}\${route}\`);
+                    assert.strictEqual(response.status, 404, route);
                 }
 
                 await handle.stop();
