@@ -149,6 +149,38 @@ describe("@tbrandenburg/node-red-temporal-runtime/lib/activities", function() {
             });
         });
 
+        it("awaits a Promise-returning plan while preserving synchronous adapters", function() {
+            var adapter = { plan: function() { return Promise.resolve({ type: "timer", durationMs: 60000, continuation: "async" }); } };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m-async" } });
+            }).then(function(result) {
+                result.suspension.should.eql({ type: "timer", durationMs: 60000, continuation: "async" });
+                result.sends.should.eql([]);
+            });
+        });
+
+        it("turns a rejected async plan into SUSPENSION_INVALID without invoking the node", function() {
+            var adapter = { plan: function() { return Promise.reject(new Error("planning failed")); } };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m-rejected" } });
+            }).then(function(result) {
+                result.error.code.should.equal("SUSPENSION_INVALID");
+                result.error.message.should.containEql("planning failed");
+                result.sends.should.eql([]);
+            });
+        });
+
+        it("falls through to node execution when async planning resolves falsy", function() {
+            var adapter = { plan: function() { return Promise.resolve(undefined); } };
+            return bootWithAdapter(FLOW, adapter).then(function(ctx) {
+                return ctx.executeNode({ flowVersion: ctx.handle.flowVersion, nodeId: "n2", msg: { payload: 21, _msgid: "m-falsy" } });
+            }).then(function(result) {
+                should.not.exist(result.error);
+                should.not.exist(result.suspension);
+                result.sends[0].msg.payload.should.equal(42);
+            });
+        });
+
         it("a malformed suspension from plan() fails loudly (non-retryable SUSPENSION_INVALID), never silently falling back to local execution", function() {
             var adapter = { plan: function() { return { type: "timer", durationMs: -1 }; } };
             return bootWithAdapter(FLOW, adapter).then(function(ctx) {
