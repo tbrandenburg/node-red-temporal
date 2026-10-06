@@ -69,6 +69,14 @@ executes durably on Temporal. Open the Temporal Web UI to watch it:
 http://localhost:8233
 ```
 
+Runner B's Admin API is at `http://127.0.0.1:1881/flows`. Node-owned HTTP
+routes use **port 1882**: after deploying FlowFuse Dashboard nodes, open
+`http://localhost:1882/dashboard` (or the dashboard path configured in your
+flow). The runtime base URL `http://localhost:1882/` can return HTTP 404 when
+no node serves `/`; this does not mean the runtime listener is unavailable.
+`make run` prints HTTP status checks and a Dashboard link when the default
+`/dashboard` path responds successfully.
+
 To seed the runner's initial flow instead of starting empty, pass `FLOW=`
 (e.g. one of the package's `demo/flows*.json` fixtures):
 
