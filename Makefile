@@ -174,20 +174,29 @@ run: build
 	fi
 	@echo ""
 	@for entry in \
-		"Editor A (design time, press Deploy)|http://localhost:$(EDITOR_PORT)" \
-		"Runner B admin API                  |http://$(ADMIN_HOST):$(ADMIN_PORT)" \
-		"Runner B runtime HTTP               |http://$(RUNTIME_HTTP_HOST):$(RUNTIME_HTTP_PORT)" \
-		"Temporal Web UI                     |http://localhost:8233" \
+		"Editor A (design time, press Deploy)|http://localhost:$(EDITOR_PORT)|200" \
+		"Runner B admin API                  |http://$(ADMIN_HOST):$(ADMIN_PORT)/flows|200" \
+		"Runner B runtime HTTP (base URL)    |http://localhost:$(RUNTIME_HTTP_PORT)|200,404" \
+		"Temporal Web UI                     |http://localhost:8233|200" \
 	; do \
 		label="$${entry%%|*}"; \
-		url="$${entry#*|}"; \
-		if curl -s -o /dev/null --max-time 2 "$$url"; then \
-			mark="✅"; \
-		else \
-			mark="❌"; \
-		fi; \
-		echo "$$mark $$label : $$url"; \
+		rest="$${entry#*|}"; url="$${rest%%|*}"; expected="$${rest##*|}"; \
+		mark="❌"; \
+		for attempt in 1 2 3 4 5; do \
+			code="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$$url")"; \
+			case ",$$expected," in *",$$code,"*) mark="✅"; break ;; esac; \
+			[ "$$attempt" = 5 ] || sleep 1; \
+		done; \
+		echo "$$mark $$label : $$url (HTTP $$code)"; \
 	done
+	@url="http://localhost:$(RUNTIME_HTTP_PORT)/dashboard"; \
+	code="$$(curl -s -L -o /dev/null -w '%{http_code}' --max-time 2 "$$url")"; \
+	if [ "$$code" = 200 ]; then \
+		echo "✅ FlowFuse Dashboard                  : $$url (HTTP $$code)"; \
+	else \
+		echo "FlowFuse Dashboard: deploy Dashboard nodes, then open http://localhost:$(RUNTIME_HTTP_PORT)<configured dashboard path> (default: /dashboard)."; \
+	fi
+	@echo "Runtime HTTP serves node routes; its base URL may return HTTP 404. Port $(ADMIN_PORT) serves the Admin API, not the Dashboard."
 	@echo "Editor log                           : $(EDITOR_LOG)"
 	@echo "Runner log                           : $(RUNNER_LOG)"
 	@echo "Next: open the editor, build/edit a flow, press Deploy."
