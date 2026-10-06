@@ -211,12 +211,16 @@ See [COMPATIBILITY.md](packages/node_modules/@tbrandenburg/node-red-temporal-run
 
 ### HTTP compatibility
 
+- ✅ **Stock inbound `HTTP In → ordinary nodes → HTTP Response` flows** are
+  supported on the Activity/combined runner. A transport-edge bridge passes a
+  serializable request snapshot through the Workflow and applies the stock
+  HTTP Response node's recorded result to the original HTTP response. Live
+  Express objects do not cross Temporal history. See the runtime package's
+  [HTTP bridge contract](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#stock-http-in--http-response-issue-75)
+  for limitations, including unsupported direct `req`/`res` use and bounded
+  synchronous waiting.
 - ✅ **Outbound `http request` nodes** are supported as ordinary Node-RED
   Activities, subject to the documented at-least-once side-effect semantics.
-- ❌ **Inbound `http in → ... → http response` flows** are currently
-  unsupported. Those nodes depend on live `req`/`res` connection objects
-  that cannot cross Temporal's durable message boundary or survive a worker
-  restart.
 - ✅ **A separate, opt-in HTTP ingress/egress transport** (`--http-ingress-port`,
   issue #58) can start a flow's Workflow (and optionally wait for a
   designated result node) over HTTP - a thin transport around
@@ -317,7 +321,7 @@ This is an early alpha. Important boundaries are explicit:
 - **In-flight flow migration is not implemented.** Redeploying to a new `flowVersion` causes Workflows pinned to the old version to fail explicitly with `FLOW_VERSION_MISMATCH`.
 - **Context durability is a Node-RED storage concern.** The default in-memory context is still lost on restart; configure a persistent Node-RED context store when required.
 - **Not every JavaScript object is a durable message.** Circular objects, functions and live sockets/streams cannot safely cross the Temporal serialization boundary. Buffer/Date/Error behavior is documented in the runtime package README.
-- **Inbound `HTTP In → HTTP Response` bridging is not implemented.** Those live `req`/`res` objects are outside the current durable message boundary; outbound `http request` is unaffected and supported (see [HTTP compatibility](#http-compatibility)).
+- **The stock HTTP bridge is intentionally narrow.** It supports ordinary `HTTP In → ... → HTTP Response` flows, but not Function-node access to live Express APIs, streaming/SSE/WebSockets, multipart uploads, or arbitrary response methods. HTTP waits are bounded; timing out the client wait does not cancel the Workflow. See [HTTP compatibility](#http-compatibility) and the runtime package's [bridge contract](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md#stock-http-in--http-response-issue-75).
 - **Hooks are process-global.** Run one Capture instance per Node-RED Activity-worker process.
 - **Legacy (pre-1.0) `on('input', function(msg))` node handlers fail fast, not silently.** Nodes that never receive/call a `done()` callback cannot be tracked for completion by Node-RED itself, so their Activity now fails immediately with an explicit `LEGACY_NODE_NO_DONE` error instead of hanging for the full node-execution timeout; see the runtime package's [`COMPATIBILITY.md`](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/COMPATIBILITY.md#legacy-pre-10-input-handler-nodes-issue-53-resolution).
 - **Performance is not yet characterized.** No production throughput, batching or autoscaling guidance is claimed.
