@@ -16,6 +16,8 @@ We are building a Temporal-backed execution engine for Node-RED workflows.
 ## Repository context
 
 This is a **divergent fork** of `node-red/node-red`, forked at tag `5.0.7` (`1e85f1efb`).
+The current upstream baseline and the runtime package's five `@node-red/*`
+dependency pins are `5.0.9` (`df0a87cce`); see `UPSTREAM.md` for the sync history.
 
 | Remote | Target |
 |---|---|

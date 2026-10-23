@@ -55,6 +55,7 @@ security patch, or (should it ever happen) copied/adapted upstream file. See
 |---|---|---|---|---|
 | 2026-09-18 | Fork point | `5.0.7` (`1e85f1efb`) | empty | baseline: 2864 passing / 60 pending / 0 failing |
 | 2026-09-20 | Intentional root `README.md` divergence (issue #41) | n/a — documentation-only change | empty for `packages/node_modules/@node-red/` and `packages/node_modules/node-red/` | unaffected |
+| 2026-10-23 | Security-driven upstream sync; runtime's five `@node-red/*` pins bumped from `5.0.7` to `5.0.9`; compatible transitive security updates applied | `5.0.9` / `upstream/main` (`df0a87cce`) | empty for upstream-owned packages, tests, and scripts | 3521 passing / 59 pending / 0 failing (baseline: 3445 passing / 61 pending / 0 failing) |
 
 Root `README.md` was rewritten from the inherited upstream Node-RED landing
 page (hero logo, upstream badges, upstream community links) into a

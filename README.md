@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/tbrandenburg/node-red-temporal/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/tbrandenburg/node-red-temporal/actions/workflows/tests.yml)
 ![Status](https://img.shields.io/badge/status-early%20alpha-orange)
-![Node-RED](https://img.shields.io/badge/Node--RED-5.0.7-8F0000)
+![Node-RED](https://img.shields.io/badge/Node--RED-5.0.9-8F0000)
 ![Temporal JS](https://img.shields.io/badge/Temporal%20JS-1.24.0-000000)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -335,6 +335,41 @@ This is an early alpha. Important boundaries are explicit:
 - **Performance is not yet characterized.** No production throughput, batching or autoscaling guidance is claimed.
 
 For the detailed serialization table and recovery semantics, see the [runtime package README](packages/node_modules/@tbrandenburg/node-red-temporal-runtime/README.md).
+
+## Dependency security status
+
+The security refresh verified on 2026-10-23 syncs Node-RED **5.0.9**, updates
+the runtime package's five `@node-red/*` pins, and refreshes compatible
+transitive dependencies. The Temporal SDK stays at **1.24.0**.
+
+`npm audit` decreased from **25 to 8 vulnerable package entries**. The
+production-only audit decreased from **15 to 1**, with **no high or critical
+production-dependency findings**. This is not a clean security audit:
+
+| Remaining dependency | Severity | Scope / constraint |
+|---|---|---|
+| `dompurify` | Critical | Upstream pins `3.4.14`; patched in `3.4.17`. Bundled into the editor despite being a dev dependency. The critical advisory requires `SAFE_FOR_TEMPLATES` and DOM-output options not used by the editor's Markdown sanitizer. |
+| `serialize-javascript` | High | Mocha dependency; npm proposes upgrading upstream-pinned Mocha to `12.0.3`. |
+| `i18next-http-backend` | Moderate | Upstream pins `1.4.1`; npm proposes `4.0.4`, a major upgrade. |
+| `mocha` | Moderate | Upstream pins `11.8.0`; affected through its dependencies. |
+| `ip-address` | Moderate | Bundled inside upstream-pinned npm `11.21.1`; the remaining production-only finding. Normal `npm audit fix` does not replace this bundled copy. |
+| `diff` | Low | Mocha dependency. |
+| `katex` | Low | Mermaid dependency. |
+| `mermaid` | Low | Upstream pins `11.17.2`; npm proposes `12.2.0`, a major upgrade. |
+
+These findings remain open under the fork's upstream-owned dependency-pin
+policy; no forced upgrades or audit suppressions were applied. Resolving
+them requires a subsequent upstream update or an explicit policy exception.
+Development dependency classification does not imply absence of browser
+exposure. Reproduce the checks with:
+
+```bash
+npm audit
+npm audit --omit=dev
+```
+
+See the [upstream sync history](/UPSTREAM.md#sync-history) for the baseline
+and validation results.
 
 ## Repository map
 
