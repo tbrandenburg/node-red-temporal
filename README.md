@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/tbrandenburg/node-red-temporal/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/tbrandenburg/node-red-temporal/actions/workflows/tests.yml)
 ![Status](https://img.shields.io/badge/status-early%20alpha-orange)
-![Node-RED](https://img.shields.io/badge/Node--RED-5.0.9-8F0000)
+![Node-RED](https://img.shields.io/badge/Node--RED-5.0.10-8F0000)
 ![Temporal JS](https://img.shields.io/badge/Temporal%20JS-1.24.0-000000)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
