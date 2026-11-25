@@ -70,3 +70,4 @@ do-not-touch table now lists root `README.md` as a project-owned exception;
 `SECURITY.md`, `LICENSE`, and `CITATION.cff` remain upstream-owned and
 unchanged. Future upstream syncs must not silently overwrite this file with
 upstream's `README.md`.
+| 2026-11-25 | Security-driven upstream sync (fixes body-parser, multer, dompurify, i18next); runtime's five `@node-red/*` pins bumped from `5.0.9` to `5.0.10`; lockfile refreshed via `npm audit fix` | `5.0.10` (`f613ba109`) | empty vs tag `5.0.10` for upstream-owned packages, tests, and scripts | 3704 passing / 59 pending / 0 failing |
